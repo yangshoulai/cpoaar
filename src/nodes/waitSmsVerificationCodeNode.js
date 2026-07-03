@@ -147,7 +147,7 @@ async function clickResend(ctx) {
 
 function buildRetryOrFail(ctx, failureStatus, message, code) {
   const currentRetryCount = Number(ctx.state.smsVerificationRetryCount || 0);
-  const maxRetryCount = Number(ctx.config.register.smsVerificationRetryAttempts || 5);
+  const maxRetryCount = Number(ctx.config.register.smsVerificationRetryAttempts ?? 5);
   if (currentRetryCount >= maxRetryCount) {
     return NodeResult.fail(failureStatus, message, {
       smsVerificationCode: code

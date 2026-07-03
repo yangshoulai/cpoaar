@@ -27,7 +27,7 @@ export class AddPhoneNumberNode extends RegisterNode {
       return NodeResult.fail("sms_service_not_configured", "未配置短信服务");
     }
 
-    const maxAttempts = Number(ctx.config.register.phoneNumberRetryAttempts || 1);
+    const maxAttempts = Number(ctx.config.register.phoneNumberRetryAttempts ?? 1);
     let retryCount = 0;
     while (true) {
       const result = await this._submitOneMobile(ctx);
@@ -63,7 +63,7 @@ export class AddPhoneNumberNode extends RegisterNode {
         return NodeResult.fail("stopped", "流程已停止");
       }
       const waitSeconds = Number(mobileNumber.attributes?.reusableActivationWaitSeconds || 0);
-      const threshold = Number(ctx.config.register.oauthReauthWaitThresholdSeconds || 60);
+      const threshold = Number(ctx.config.register.oauthReauthWaitThresholdSeconds ?? 60);
       if (waitSeconds > threshold) {
         ctx.state.smsMobileNumber = mobileNumber;
         ctx.state.smsMobileOauthReauthPending = true;
