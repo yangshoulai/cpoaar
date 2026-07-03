@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Auto Register</title>
+    <link rel="stylesheet" href="./sidepanel.css">
+  </head>
+  <body>
+    <main class="shell">
+      <section class="command-panel" aria-label="运行控制台">
+        <header class="topbar">
+          <div class="topbar-main">
+            <h1>Auto Register</h1>
+          </div>
+          <div class="top-actions">
+            <section class="mode-switch" aria-label="运行模式">
+              <span class="mode-switch-label">模式</span>
+              <div class="mode-panel">
+                <label title="邮箱注册">
+                  <input id="emailRegisterModeInput" type="radio" name="registerMode" value="email_register">
+                  注册
+                </label>
+                <label title="重新授权">
+                  <input id="reauthorizeModeInput" type="radio" name="registerMode" value="reauthorize">
+                  授权
+                </label>
+              </div>
+            </section>
+            <button id="themeToggleButton" class="theme-toggle" type="button" aria-label="切换主题"></button>
+          </div>
+        </header>
+
+        <section class="run-toolbar" aria-label="运行控制">
+          <button id="startFreshButton" class="primary">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12a7 7 0 1 1 2.05 4.95"></path><path d="M5 17v-5h5"></path><path d="m11 9 5 3-5 3Z"></path></svg>
+            <span>从头开始</span>
+          </button>
+          <button id="continueButton">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 5 11 7-11 7Z"></path></svg>
+            <span>继续执行</span>
+          </button>
+          <button id="retryButton">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a9 9 0 0 1-15.5 6.2"></path><path d="M3 12A9 9 0 0 1 18.5 5.8"></path><path d="M18 2v4h4"></path><path d="M6 22v-4H2"></path></svg>
+            <span>重试当前</span>
+          </button>
+          <button id="stopButton" class="danger">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1"></rect></svg>
+            <span>停止流程</span>
+          </button>
+        </section>
+      </section>
+
+      <section id="dataPanel" class="panel data-panel">
+        <div class="section-head">
+          <h2 id="dataPanelTitle">历史记录</h2>
+          <div class="mini-actions">
+            <button id="refreshDataButton" type="button">刷新</button>
+          </div>
+        </div>
+        <div id="dataTableWrap" class="data-table-wrap"></div>
+      </section>
+
+      <section class="panel flow-panel">
+        <div class="section-head">
+          <h2>节点流转</h2>
+          <span id="currentNodeText">未运行</span>
+        </div>
+        <div id="nodeGraph" class="node-graph"></div>
+      </section>
+
+      <section class="panel node-panel">
+        <div class="section-head">
+          <h2>当前节点</h2>
+          <span id="attemptText">-</span>
+        </div>
+        <dl class="node-detail">
+          <div>
+            <dt>开始地址</dt>
+            <dd id="nodeStartUrl">-</dd>
+          </div>
+          <div>
+            <dt>执行结果</dt>
+            <dd id="nodeResultText">-</dd>
+          </div>
+          <div>
+            <dt>账号摘要</dt>
+            <dd id="accountSummary">-</dd>
+          </div>
+        </dl>
+      </section>
+
+      <section class="panel config-panel">
+        <div class="section-head">
+          <h2>插件配置</h2>
+          <div class="mini-actions">
+            <button id="importButton">导入 JSON</button>
+            <button id="exportButton">导出 JSON</button>
+          </div>
+        </div>
+        <input id="importInput" type="file" accept="application/json,.json" hidden>
+        <div id="configTabs" class="config-tabs"></div>
+        <form id="configForm" class="config-form"></form>
+        <p id="configMessage" class="config-message"></p>
+      </section>
+
+      <section class="panel log-panel">
+        <div class="section-head">
+          <h2>日志</h2>
+          <div class="log-actions">
+            <label class="log-level-control">
+              <span>级别</span>
+              <select id="logLevelSelect">
+                <option value="DEBUG">调试</option>
+                <option value="INFO">信息</option>
+                <option value="WARNING">警告</option>
+                <option value="ERROR">错误</option>
+              </select>
+            </label>
+            <button id="clearLogsButton">清空</button>
+          </div>
+        </div>
+        <div id="logList" class="log-list"></div>
+      </section>
+    </main>
+    <script type="module" src="./sidepanel.js"></script>
+  </body>
+</html>

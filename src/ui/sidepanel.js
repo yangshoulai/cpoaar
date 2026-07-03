@@ -1,0 +1,1484 @@
+import { TabController } from "../core/browser.js";
+import { FlowRunner, createInitialSnapshot } from "../core/flow.js";
+import { STORAGE_KEYS, clearLogs, clearSnapshot, loadConfig, loadLogs, loadOutlookGroups, loadRegisterHistory, loadSnapshot, saveConfig, saveOutlookGroups, saveSnapshot } from "../core/storage.js";
+import { normalizeConfig, validateConfig } from "../core/config.js";
+import { createLogger } from "../core/logger.js";
+import { createServices } from "../services/index.js";
+import { deleteRegisteredAccount } from "../services/accountDeletionService.js";
+import { SmsActivationStore } from "../services/smsActivationStore.js";
+import { buildRegisterFlow, getManualRetryPolicy, getNodeOrder } from "../flow/registerFlowFactory.js";
+import { HERO_SMS_COUNTRIES, SMS_BOWER_COUNTRIES } from "../data/smsCountries.js";
+
+const logger = createLogger("ui");
+const dom = {
+  themeToggleButton: document.querySelector("#themeToggleButton"),
+  emailRegisterModeInput: document.querySelector("#emailRegisterModeInput"),
+  reauthorizeModeInput: document.querySelector("#reauthorizeModeInput"),
+  startFreshButton: document.querySelector("#startFreshButton"),
+  continueButton: document.querySelector("#continueButton"),
+  retryButton: document.querySelector("#retryButton"),
+  stopButton: document.querySelector("#stopButton"),
+  dataPanel: document.querySelector("#dataPanel"),
+  dataPanelTitle: document.querySelector("#dataPanelTitle"),
+  refreshDataButton: document.querySelector("#refreshDataButton"),
+  dataTableWrap: document.querySelector("#dataTableWrap"),
+  nodeGraph: document.querySelector("#nodeGraph"),
+  currentNodeText: document.querySelector("#currentNodeText"),
+  attemptText: document.querySelector("#attemptText"),
+  nodeStartUrl: document.querySelector("#nodeStartUrl"),
+  nodeResultText: document.querySelector("#nodeResultText"),
+  accountSummary: document.querySelector("#accountSummary"),
+  configTabs: document.querySelector("#configTabs"),
+  configForm: document.querySelector("#configForm"),
+  configMessage: document.querySelector("#configMessage"),
+  importButton: document.querySelector("#importButton"),
+  importInput: document.querySelector("#importInput"),
+  exportButton: document.querySelector("#exportButton"),
+  logLevelSelect: document.querySelector("#logLevelSelect"),
+  clearLogsButton: document.querySelector("#clearLogsButton"),
+  logList: document.querySelector("#logList")
+};
+
+const CONFIG_GROUPS = [
+  ["accountService", "账号"],
+  ["httpService", "HTTP"],
+  ["emailService", "邮箱"],
+  ["smsService", "短信"],
+  ["accountExportService", "导出"],
+  ["register", "注册器"],
+  ["reauthorize", "重新授权"]
+];
+
+const CONFIG_SCHEMAS = {
+  accountService: [
+    section("账号生成"),
+    checkboxField("随机密码", "accountService.randomPassword"),
+    textField("固定密码", "accountService.specifiedPassword", "关闭随机密码时使用。", () => getConfigValue(appConfig, "accountService.randomPassword") === false)
+  ],
+  httpService: [
+    section("HTTP"),
+    numberField("默认超时", "httpService.defaultTimeout", "秒")
+  ],
+  emailService: [
+    section("邮箱服务"),
+    selectField("服务提供者", "emailService.provider", [["outlook_mail", "OutlookMail"]]),
+    textField("接口地址", "emailService.providers.outlook_mail.baseUrl"),
+    textField("管理员密码", "emailService.providers.outlook_mail.adminPassword"),
+    checkboxField("使用临时邮箱", "emailService.providers.outlook_mail.useTempEmail"),
+    section("临时邮箱", () => getConfigValue(appConfig, "emailService.providers.outlook_mail.useTempEmail") === true),
+    selectField("临时邮箱提供者", "emailService.providers.outlook_mail.tempEmail.provider", [["cloudflare", "Cloudflare"]], "", () => getConfigValue(appConfig, "emailService.providers.outlook_mail.useTempEmail") === true),
+    textField("Channel ID", "emailService.providers.outlook_mail.tempEmail.channelId", "", () => getConfigValue(appConfig, "emailService.providers.outlook_mail.useTempEmail") === true),
+    textField("临时邮箱域名", "emailService.providers.outlook_mail.tempEmail.domain", "", () => getConfigValue(appConfig, "emailService.providers.outlook_mail.useTempEmail") === true),
+    section("Outlook 邮箱池", () => getConfigValue(appConfig, "emailService.providers.outlook_mail.useTempEmail") !== true),
+    actionField("刷新分组", "从 OutlookMail 服务获取最新分组列表。", refreshOutlookGroups, () => getConfigValue(appConfig, "emailService.providers.outlook_mail.useTempEmail") !== true),
+    dynamicSelectField("邮箱池分组", "emailService.providers.outlook_mail.outlook.poolGroupId", getOutlookGroupOptions, "", () => getConfigValue(appConfig, "emailService.providers.outlook_mail.useTempEmail") !== true),
+    dynamicSelectField("已注册分组", "emailService.providers.outlook_mail.outlook.registeredGroupId", getOutlookGroupOptions, "", () => getConfigValue(appConfig, "emailService.providers.outlook_mail.useTempEmail") !== true),
+    dynamicSelectField("已删除分组", "emailService.providers.outlook_mail.outlook.deletedGroupId", getOutlookGroupOptions, "", () => getConfigValue(appConfig, "emailService.providers.outlook_mail.useTempEmail") !== true),
+    checkboxField("重新授权删除账号时移动邮箱", "emailService.providers.outlook_mail.outlook.moveEmailOnReauthorizeDelete", () => getConfigValue(appConfig, "emailService.providers.outlook_mail.useTempEmail") !== true)
+  ],
+  smsService: [
+    section("短信服务"),
+    selectField("服务提供者", "smsService.provider", [
+      ["", "不启用"],
+      ["hero_sms", "HeroSMS"],
+      ["sms_bower", "SMSBower"]
+    ]),
+    section("HeroSMS", () => getConfigValue(appConfig, "smsService.provider") === "hero_sms"),
+    textField("接口地址", "smsService.providers.hero_sms.baseUrl", "", () => getConfigValue(appConfig, "smsService.provider") === "hero_sms"),
+    textField("API Key", "smsService.providers.hero_sms.apiKey", "", () => getConfigValue(appConfig, "smsService.provider") === "hero_sms"),
+    countryField("目标国家", "smsService.providers.hero_sms.countryId", HERO_SMS_COUNTRIES, () => getConfigValue(appConfig, "smsService.provider") === "hero_sms"),
+    numberField("最大价格", "smsService.providers.hero_sms.maxPrice", "", () => getConfigValue(appConfig, "smsService.provider") === "hero_sms"),
+    numberField("验证码超时", "smsService.providers.hero_sms.verificationCodeWaitTimeout", "秒", () => getConfigValue(appConfig, "smsService.provider") === "hero_sms"),
+    section("SMSBower", () => getConfigValue(appConfig, "smsService.provider") === "sms_bower" || getConfigValue(appConfig, "smsService.provider") === "smsbower"),
+    textField("接口地址", "smsService.providers.sms_bower.baseUrl", "", () => getConfigValue(appConfig, "smsService.provider") === "sms_bower" || getConfigValue(appConfig, "smsService.provider") === "smsbower"),
+    textField("API Key", "smsService.providers.sms_bower.apiKey", "", () => getConfigValue(appConfig, "smsService.provider") === "sms_bower" || getConfigValue(appConfig, "smsService.provider") === "smsbower"),
+    countryField("目标国家", "smsService.providers.sms_bower.countryId", SMS_BOWER_COUNTRIES, () => getConfigValue(appConfig, "smsService.provider") === "sms_bower" || getConfigValue(appConfig, "smsService.provider") === "smsbower"),
+    numberField("最低价格", "smsService.providers.sms_bower.minPrice", "", () => getConfigValue(appConfig, "smsService.provider") === "sms_bower" || getConfigValue(appConfig, "smsService.provider") === "smsbower"),
+    numberField("最高价格", "smsService.providers.sms_bower.maxPrice", "", () => getConfigValue(appConfig, "smsService.provider") === "sms_bower" || getConfigValue(appConfig, "smsService.provider") === "smsbower"),
+    numberField("验证码超时", "smsService.providers.sms_bower.verificationCodeWaitTimeout", "秒", () => getConfigValue(appConfig, "smsService.provider") === "sms_bower" || getConfigValue(appConfig, "smsService.provider") === "smsbower"),
+    numberField("激活有效期", "smsService.providers.sms_bower.activationValidSeconds", "秒", () => getConfigValue(appConfig, "smsService.provider") === "sms_bower" || getConfigValue(appConfig, "smsService.provider") === "smsbower")
+  ],
+  accountExportService: [
+    section("账号导出"),
+    selectField("服务提供者", "accountExportService.provider", [["cpa", "CPA"]]),
+    textField("接口地址", "accountExportService.providers.cpa.baseUrl"),
+    textField("管理密钥", "accountExportService.providers.cpa.secretKey")
+  ],
+  register: [
+    section("注册流程"),
+    numberField("邮箱验证码超时", "register.verificationCodeWaitTimeout", "秒"),
+    numberField("手机号重试次数", "register.phoneNumberRetryAttempts", "次"),
+    numberField("短信 OAuth 重试", "register.smsVerificationRetryAttempts", "次"),
+    numberField("OAuth 重新认证阈值", "register.oauthReauthWaitThresholdSeconds", "秒"),
+    section("手机号策略"),
+    checkboxField("号码复用", "register.reusePhoneNumber", null, {
+      summary: () => formatLatestActivationSummary(latestActivationRecord)
+    }),
+    numberField("复用最小间隔", "register.reuseMinIntervalSeconds", "秒")
+  ],
+  reauthorize: [
+    section("重新授权"),
+    checkboxField("账号被删时删除账号", "reauthorize.deleteAccountOnDeactivated"),
+    radioField("手机号二验", "reauthorize.phoneChallengeAction", [
+      ["stop", "终止流程"],
+      ["delete_account", "删除账号"],
+      ["manual_code", "手动填写验证码"]
+    ])
+  ],
+};
+
+const STATUS_LABELS = {
+  idle: "待机",
+  pending: "待执行",
+  running: "运行中",
+  waiting: "等待中",
+  success: "成功",
+  failed: "失败",
+  stopped: "已停止",
+  exception: "异常"
+};
+
+const RESULT_STATUS_LABELS = {
+  startup_initialized: "初始化完成",
+  chatgpt_tab_opened: "ChatGPT 已打开",
+  email_submitted: "邮箱已提交",
+  email_submitted_sms_verification_ready: "进入短信验证",
+  email_submitted_create_password_ready: "需要创建密码",
+  password_created: "密码已创建",
+  password_created_about_you_ready: "密码已创建，进入资料页",
+  email_verification_retry_current_node: "重新执行邮箱验证",
+  email_verified: "邮箱已验证",
+  email_verified_chatgpt_ready: "ChatGPT 已登录",
+  codex_oauth_needs_phone: "需要手机号验证",
+  codex_oauth_consent_ready: "Consent 已就绪",
+  reauthorize_account_deactivated_ready: "账号已停用",
+  reauthorize_account_deactivated: "账号已停用",
+  reauthorize_account_deleted: "账号已删除",
+  reauthorize_account_delete_failed: "账号删除失败",
+  reauthorize_phone_challenge_stopped: "手机号二验已终止",
+  reauthorize_phone_challenge_failed: "手机号二验失败",
+  reauthorize_phone_input_missing: "缺少手机号输入框",
+  reauthorize_phone_empty: "手机号为空",
+  reauthorize_phone_submit_failed: "手机号提交失败",
+  reauthorize_phone_code_empty: "手机号验证码为空",
+  reauthorize_phone_code_input_missing: "缺少手机号验证码框",
+  reauthorize_phone_code_failed: "手机号验证码失败",
+  reauthorize_phone_consent_ready: "手机号二验通过",
+  about_you_submitted: "资料已提交",
+  about_you_retry_fill_email: "账号已存在，登录当前邮箱",
+  codex_oauth_email_verification_ready: "OAuth 邮箱验证",
+  phone_waited_oauth_reauth_required: "需要重新 OAuth",
+  phone_submitted: "手机号已提交",
+  sms_verification_retry_select_codex_account: "重试 OAuth",
+  phone_verified: "手机号已验证",
+  codex_account_exported: "账号已导出",
+  chatgpt_tab_open_failed: "打开失败",
+  email_submit_failed: "邮箱提交失败",
+  email_verification_unexpected_url: "邮箱验证页面异常",
+  password_create_failed: "创建密码失败",
+  email_verification_failed: "邮箱验证失败",
+  email_verification_code_timeout: "邮箱验证码超时",
+  account_create_failed: "账号创建失败",
+  about_you_failed: "资料填写失败",
+  about_you_unexpected_url: "资料页结果异常",
+  codex_oauth_account_select_failed: "账号选择失败",
+  codex_oauth_request_failed: "OAuth 链接获取失败",
+  codex_oauth_unexpected_url: "OAuth 页面异常",
+  phone_submit_failed: "手机号提交失败",
+  phone_submit_error: "手机号错误",
+  phone_verification_unexpected_url: "手机号验证页异常",
+  phone_verification_failed: "手机号验证失败",
+  sms_service_not_configured: "未配置短信服务",
+  sms_verification_code_timeout: "短信验证码超时",
+  sms_verification_error: "短信验证错误",
+  codex_consent_submit_failed: "Consent 提交失败",
+  codex_oauth_redirect_timeout: "OAuth 回调超时",
+  account_export_failed: "账号导出失败"
+};
+
+const LOG_LEVEL_LABELS = {
+  DEBUG: "调试",
+  INFO: "信息",
+  WARN: "警告",
+  WARNING: "警告",
+  ERROR: "错误"
+};
+
+const LOG_LEVEL_WEIGHT = {
+  DEBUG: 10,
+  INFO: 20,
+  WARN: 30,
+  WARNING: 30,
+  ERROR: 40
+};
+
+let appConfig = normalizeConfig(await loadConfig());
+let flow = buildRegisterFlow(getRegisterMode());
+let activeConfigGroup = "emailService";
+let runner = null;
+let saveTimer = null;
+let outlookGroups = await loadOutlookGroups();
+let persistedSnapshot = await loadSnapshot();
+if (persistedSnapshot?.status === "running") {
+  persistedSnapshot = buildStoppedSnapshot(persistedSnapshot, "插件面板已重新打开，之前的运行已中断");
+  await saveSnapshot(persistedSnapshot);
+}
+let lastSnapshot = persistedSnapshot || await createInitialSnapshot(flow);
+const renderedLogIds = new Set();
+const activationStore = new SmsActivationStore();
+let latestActivationRecord = await activationStore.getLatestActivation();
+let historyFilterValue = "";
+let historyPage = 1;
+const HISTORY_PAGE_SIZE = 10;
+
+applyTheme();
+renderAll();
+bindEvents();
+await renderLogs();
+await renderHistoryPanel();
+
+chrome.runtime.onMessage.addListener((message) => {
+  if (message.type === "auto-register-log") {
+    appendLogEntry(message.entry);
+  }
+  if (message.type === "auto-register-snapshot") {
+    lastSnapshot = message.snapshot;
+    renderSnapshot(lastSnapshot);
+  }
+});
+
+window.addEventListener("auto-register-log-entry", (event) => {
+  appendLogEntry(event.detail);
+});
+
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName !== "local") {
+    return;
+  }
+  const logsChange = changes[STORAGE_KEYS.logs];
+  if (logsChange) {
+    const nextLogs = logsChange.newValue || [];
+    if (!nextLogs.length) {
+      dom.logList.innerHTML = "";
+      renderedLogIds.clear();
+      return;
+    }
+    appendNewLogEntries(nextLogs);
+  }
+  if (changes[STORAGE_KEYS.registerHistory]) {
+    renderHistoryTable();
+  }
+  if (changes[STORAGE_KEYS.outlookGroups]) {
+    outlookGroups = changes[STORAGE_KEYS.outlookGroups].newValue || [];
+    if (activeConfigGroup === "emailService") {
+      renderConfigForm();
+    }
+  }
+});
+
+function bindEvents() {
+  dom.emailRegisterModeInput.addEventListener("change", () => updateRegisterMode("email_register"));
+  dom.reauthorizeModeInput.addEventListener("change", () => updateRegisterMode("reauthorize"));
+  dom.startFreshButton.addEventListener("click", startFresh);
+  dom.continueButton.addEventListener("click", continueRun);
+  dom.retryButton.addEventListener("click", retryCurrentNode);
+  dom.stopButton.addEventListener("click", stopRun);
+  dom.refreshDataButton.addEventListener("click", renderHistoryPanel);
+  dom.importButton.addEventListener("click", () => dom.importInput.click());
+  dom.importInput.addEventListener("change", importConfig);
+  dom.exportButton.addEventListener("click", exportConfig);
+  dom.configForm.addEventListener("submit", (event) => event.preventDefault());
+  dom.logLevelSelect.addEventListener("change", async () => {
+    setConfigValue(appConfig, "logging.level", dom.logLevelSelect.value);
+    await saveConfig(appConfig);
+    await renderLogs();
+    showConfigMessage("日志级别已保存");
+  });
+  dom.clearLogsButton.addEventListener("click", async () => {
+    await clearLogs();
+    dom.logList.innerHTML = "";
+    renderedLogIds.clear();
+  });
+  dom.themeToggleButton.addEventListener("click", toggleTheme);
+}
+
+async function startFresh() {
+  if (getRegisterMode() === "reauthorize") {
+    showConfigMessage("重新授权模式请在历史记录中选择账号执行", true);
+    await renderHistoryPanel();
+    return;
+  }
+  const errors = validateConfig(appConfig);
+  if (errors.length) {
+    showConfigMessage(errors.join("；"), true);
+    return;
+  }
+  await clearSnapshot();
+  await clearLogs();
+  dom.logList.innerHTML = "";
+  const tabs = new TabController();
+  const ctx = createRunContext(tabs, await createInitialSnapshot(flow), {});
+  const currentRunner = new FlowRunner(flow, ctx, renderSnapshot);
+  runner = currentRunner;
+  logger.info("从头开始执行注册流程");
+  try {
+    await currentRunner.run();
+  } finally {
+    if (runner === currentRunner) {
+      runner = null;
+    }
+  }
+}
+
+async function continueRun() {
+  const snapshot = await loadSnapshot();
+  if (!snapshot) {
+    showConfigMessage("没有可继续的流程快照", true);
+    return;
+  }
+  if (snapshot.status === "failed") {
+    showConfigMessage("流程失败后请使用重试当前节点", true);
+    return;
+  }
+  const tabs = new TabController();
+  if (snapshot.tabId) {
+    await tabs.setCurrentTab(snapshot.tabId).catch(() => {});
+  }
+  const ctx = createRunContext(tabs, snapshot, snapshot.state || {});
+  const currentRunner = new FlowRunner(flow, ctx, renderSnapshot);
+  runner = currentRunner;
+  logger.info("继续执行注册流程", { currentNode: snapshot.currentNode });
+  try {
+    await currentRunner.run(snapshot.currentNode || flow.startNode);
+  } finally {
+    if (runner === currentRunner) {
+      runner = null;
+    }
+  }
+}
+
+async function retryCurrentNode() {
+  const snapshot = await loadSnapshot();
+  if (!snapshot?.currentNode) {
+    showConfigMessage("没有可重试的当前节点", true);
+    return;
+  }
+  const retryPolicy = getManualRetryPolicy(getRegisterMode(), snapshot.currentNode);
+  if (!retryPolicy.retryable) {
+    showConfigMessage(retryPolicy.message || "当前节点不支持重试", true);
+    return;
+  }
+  const tabs = new TabController();
+  let restoredTab = false;
+  if (snapshot.tabId) {
+    try {
+      await tabs.setCurrentTab(snapshot.tabId);
+      restoredTab = true;
+    } catch {
+      restoredTab = false;
+    }
+  }
+  const startUrl = snapshot.nodeStarts?.[snapshot.currentNode]?.url;
+  if (retryPolicy.prepare === "refresh" && restoredTab) {
+    await tabs.reload().catch(() => {});
+  } else if (retryPolicy.prepare === "refresh" && startUrl) {
+    await tabs.navigate(startUrl);
+  }
+
+  const retryStartNode = retryPolicy.startNode || snapshot.currentNode;
+  const ctx = createRunContext(tabs, snapshot, snapshot.state || {});
+  const currentRunner = new FlowRunner(flow, ctx, renderSnapshot);
+  runner = currentRunner;
+  logger.info("手动重试当前节点", {
+    node: snapshot.currentNode,
+    retryStartNode,
+    prepare: retryPolicy.prepare,
+    startUrl
+  });
+  try {
+    await currentRunner.run(retryStartNode);
+  } finally {
+    if (runner === currentRunner) {
+      runner = null;
+    }
+  }
+}
+
+async function stopRun() {
+  if (runner) {
+    runner.stop();
+  }
+  const snapshot = await loadSnapshot() || lastSnapshot;
+  const stoppedSnapshot = buildStoppedSnapshot(snapshot, "流程已停止");
+  await saveSnapshot(stoppedSnapshot);
+  lastSnapshot = stoppedSnapshot;
+  renderSnapshot(stoppedSnapshot);
+  logger.warn(runner ? "用户停止流程" : "用户停止流程，当前面板没有活动 runner，已修正快照状态");
+}
+
+async function renderHistoryPanel() {
+  dom.dataPanelTitle.textContent = getRegisterMode() === "reauthorize"
+    ? "历史记录 · 重新授权模式"
+    : "历史记录";
+  await renderHistoryTable();
+}
+
+async function renderHistoryTable() {
+  const history = await loadRegisterHistory();
+  const filtered = filterHistory(history);
+  const totalPages = Math.max(1, Math.ceil(filtered.length / HISTORY_PAGE_SIZE));
+  historyPage = Math.min(Math.max(1, historyPage), totalPages);
+  const pageRecords = filtered.slice((historyPage - 1) * HISTORY_PAGE_SIZE, historyPage * HISTORY_PAGE_SIZE);
+
+  dom.dataTableWrap.innerHTML = "";
+  dom.dataTableWrap.append(renderHistoryControls(filtered.length, totalPages));
+  if (!pageRecords.length) {
+    const empty = document.createElement("div");
+    empty.className = "table-empty";
+    empty.textContent = history.length ? "没有匹配的历史账号" : "暂无已完成注册的账号";
+    dom.dataTableWrap.append(empty);
+    return;
+  }
+  const table = createDataTable([
+    "邮箱",
+    "注册时间",
+    "操作"
+  ]);
+  table.classList.add("history-table");
+  for (const record of pageRecords) {
+    appendDataRow(table, [
+      renderCopyableText(record.emailAddress || "-", record.emailAddress || "", "邮箱"),
+      formatDateTime(record.registeredAt),
+      renderHistoryAction(record)
+    ]);
+  }
+  dom.dataTableWrap.append(table);
+}
+
+function renderHistoryControls(totalCount, totalPages) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "data-toolbar";
+
+  const input = document.createElement("input");
+  input.type = "search";
+  input.placeholder = "按邮箱过滤";
+  input.value = historyFilterValue;
+  input.addEventListener("input", () => {
+    historyFilterValue = input.value.trim();
+    historyPage = 1;
+    renderHistoryTable();
+  });
+
+  const pager = document.createElement("span");
+  pager.className = "pager";
+  const prev = document.createElement("button");
+  prev.type = "button";
+  prev.textContent = "上一页";
+  prev.disabled = historyPage <= 1;
+  prev.addEventListener("click", () => {
+    historyPage -= 1;
+    renderHistoryTable();
+  });
+  const text = document.createElement("span");
+  text.textContent = `${historyPage}/${totalPages} · ${totalCount} 条`;
+  const next = document.createElement("button");
+  next.type = "button";
+  next.textContent = "下一页";
+  next.disabled = historyPage >= totalPages;
+  next.addEventListener("click", () => {
+    historyPage += 1;
+    renderHistoryTable();
+  });
+  pager.append(prev, text, next);
+  wrapper.append(input, pager);
+  return wrapper;
+}
+
+function filterHistory(history) {
+  const keyword = historyFilterValue.toLowerCase();
+  if (!keyword) {
+    return history;
+  }
+  return history.filter((record) => String(record.emailAddress || "").toLowerCase().includes(keyword));
+}
+
+function renderHistoryAction(record) {
+  const actions = document.createElement("span");
+  actions.className = "table-actions";
+  if (getRegisterMode() === "reauthorize") {
+    const reauthorizeButton = document.createElement("button");
+    reauthorizeButton.type = "button";
+    reauthorizeButton.className = "table-action primary";
+    reauthorizeButton.textContent = "重新授权";
+    reauthorizeButton.addEventListener("click", () => startReauthorize(record));
+    actions.append(reauthorizeButton);
+  }
+  const deleteButton = document.createElement("button");
+  deleteButton.type = "button";
+  deleteButton.className = "table-action danger";
+  deleteButton.textContent = "删除";
+  deleteButton.addEventListener("click", () => deleteHistoryRecord(record, deleteButton));
+  actions.append(deleteButton);
+  return actions;
+}
+
+function createDataTable(headers) {
+  const table = document.createElement("table");
+  table.className = "data-table";
+  const thead = document.createElement("thead");
+  const headerRow = document.createElement("tr");
+  for (const header of headers) {
+    const th = document.createElement("th");
+    th.textContent = header;
+    headerRow.append(th);
+  }
+  thead.append(headerRow);
+  table.append(thead, document.createElement("tbody"));
+  return table;
+}
+
+function appendDataRow(table, cells) {
+  const row = document.createElement("tr");
+  for (const cell of cells) {
+    const td = document.createElement("td");
+    if (cell instanceof Node) {
+      td.append(cell);
+    } else {
+      td.textContent = String(cell ?? "-");
+    }
+    row.append(td);
+  }
+  table.querySelector("tbody").append(row);
+}
+
+function renderCopyableText(displayText, copyText, label) {
+  const wrapper = document.createElement("span");
+  wrapper.className = "copyable-cell";
+  const text = document.createElement("span");
+  text.className = "copyable-text";
+  text.textContent = displayText || "-";
+  wrapper.append(text);
+
+  if (copyText) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "copy-icon-button";
+    button.title = `复制${label}`;
+    button.setAttribute("aria-label", `复制${label}`);
+    button.innerHTML = `
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <rect x="9" y="9" width="10" height="10" rx="2"></rect>
+        <path d="M5 15V7a2 2 0 0 1 2-2h8"></path>
+      </svg>
+    `;
+    button.addEventListener("click", () => copyTableValue(copyText, label, button));
+    wrapper.append(button);
+  }
+
+  return wrapper;
+}
+
+async function copyTableValue(value, label, button) {
+  const originalTitle = button.title;
+  button.disabled = true;
+  try {
+    await writeClipboardText(value);
+    button.classList.add("copied");
+    showConfigMessage(`${label}已复制`);
+    logger.info("表格字段已复制", { label, value });
+    setTimeout(() => button.classList.remove("copied"), 900);
+  } catch (error) {
+    showConfigMessage(`${label}复制失败：${error.message}`, true);
+    logger.warn("表格字段复制失败", { label, value, error: error.message });
+  } finally {
+    button.disabled = false;
+    button.title = originalTitle;
+  }
+}
+
+async function writeClipboardText(value) {
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(value);
+      return;
+    } catch {
+      // 扩展面板失焦时可能被浏览器拒绝，继续使用兼容复制方案。
+    }
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = value;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  document.body.append(textarea);
+  textarea.select();
+  try {
+    if (!document.execCommand("copy")) {
+      throw new Error("浏览器拒绝复制");
+    }
+  } finally {
+    textarea.remove();
+  }
+}
+
+async function deleteHistoryRecord(record, button) {
+  if (!window.confirm(`确定删除历史账号？\n${record.emailAddress || ""}`)) {
+    return;
+  }
+  button.disabled = true;
+  const originalText = button.textContent;
+  button.textContent = "删除中";
+  try {
+    await deleteRegisteredAccount(appConfig, record, {
+      reason: "历史记录手动删除"
+    });
+    showConfigMessage(`历史账号已删除：${record.emailAddress}`);
+    await renderHistoryTable();
+  } catch (error) {
+    logger.warn("历史账号删除失败", {
+      email: record.emailAddress,
+      error: error.message
+    });
+    showConfigMessage(`历史账号删除失败：${error.message}`, true);
+    button.disabled = false;
+    button.textContent = originalText;
+  }
+}
+
+async function startReauthorize(record) {
+  if (lastSnapshot.status === "running") {
+    showConfigMessage("流程正在运行，不能启动重新授权", true);
+    return;
+  }
+  if (!record.emailAccount) {
+    showConfigMessage("该历史记录缺少邮箱账号详情，无法重新授权", true);
+    return;
+  }
+  const errors = validateConfig(appConfig);
+  if (errors.length) {
+    showConfigMessage(errors.join("；"), true);
+    return;
+  }
+  setConfigValue(appConfig, "register.mode", "reauthorize");
+  await saveConfig(appConfig);
+  rebuildFlowForMode();
+  await clearSnapshot();
+  await clearLogs();
+  dom.logList.innerHTML = "";
+  renderedLogIds.clear();
+
+  const tabs = new TabController();
+  const initialSnapshot = await createInitialSnapshot(flow);
+  const ctx = createRunContext(tabs, initialSnapshot, buildReauthorizeState(record));
+  const currentRunner = new FlowRunner(flow, ctx, renderSnapshot);
+  runner = currentRunner;
+  logger.info("开始重新授权流程", {
+    email: record.emailAddress,
+    emailMode: record.emailMode
+  });
+  try {
+    await currentRunner.run();
+  } finally {
+    if (runner === currentRunner) {
+      runner = null;
+    }
+  }
+}
+
+function buildReauthorizeState(record) {
+  return {
+    historyRecord: record,
+    emailAccount: record.emailAccount,
+    account: {
+      emailAddress: record.emailAddress || record.emailAccount?.emailAddress || "",
+      mobile: String(record.mobile || "").replace(/^\+/, ""),
+      name: record.name || "",
+      age: record.age || "",
+      password: record.password || "",
+      emailVerificationCode: "",
+      smsVerificationCode: ""
+    }
+  };
+}
+
+function formatMobile(value) {
+  if (!value) {
+    return "-";
+  }
+  const text = String(value);
+  return text.startsWith("+") ? text : `+${text}`;
+}
+
+function formatProvider(provider) {
+  const normalized = normalizeSmsProvider(provider);
+  if (normalized === "hero_sms") {
+    return "HeroSMS";
+  }
+  if (normalized === "sms_bower") {
+    return "SMSBower";
+  }
+  return provider || "-";
+}
+
+async function refreshLatestActivationSummary() {
+  latestActivationRecord = await activationStore.getLatestActivation();
+  for (const element of document.querySelectorAll("[data-latest-activation-summary]")) {
+    element.textContent = formatLatestActivationSummary(latestActivationRecord);
+  }
+}
+
+function formatLatestActivationSummary(record) {
+  if (!record) {
+    return "暂无缓存号码";
+  }
+  const reusableAt = record.lastVerificationCodeUsableAt
+    ? new Date(toTime(record.lastVerificationCodeUsableAt) + Number(getConfigValue(appConfig, "register.reuseMinIntervalSeconds") || 0) * 1000)
+    : null;
+  const reusableText = reusableAt && !Number.isNaN(reusableAt.getTime())
+    ? formatDateTime(reusableAt.toISOString())
+    : "暂不可复用";
+  return `${formatMobile(record.mobileNumber)} · ${formatProvider(record.provider)} · ${reusableText}`;
+}
+
+function normalizeSmsProvider(provider) {
+  return provider === "smsbower" ? "sms_bower" : provider;
+}
+
+function formatDateTime(value) {
+  const time = toTime(value);
+  if (!time) {
+    return "-";
+  }
+  return new Date(time).toLocaleString("zh-CN", {
+    hour12: false,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit"
+  });
+}
+
+function toTime(value) {
+  if (!value) {
+    return 0;
+  }
+  const time = new Date(value).getTime();
+  return Number.isNaN(time) ? 0 : time;
+}
+
+function createRunContext(tabs, snapshot, state) {
+  return {
+    config: appConfig,
+    services: createServices(appConfig),
+    tabs,
+    state: { ...(state || {}) },
+    snapshot: {
+      ...snapshot,
+      status: "running",
+      nodeResults: snapshot.nodeResults || {},
+      nodeStarts: snapshot.nodeStarts || {}
+    }
+  };
+}
+
+function buildStoppedSnapshot(snapshot = {}, error = "流程已停止") {
+  const currentNode = snapshot.currentNode || flow.startNode;
+  const nodeResults = { ...(snapshot.nodeResults || {}) };
+  if (currentNode) {
+    nodeResults[currentNode] = {
+      ...(nodeResults[currentNode] || {}),
+      title: nodeResults[currentNode]?.title || getNodeTitle(currentNode),
+      status: "stopped",
+      resultStatus: "stopped",
+      error,
+      at: new Date().toISOString()
+    };
+  }
+  return {
+    ...snapshot,
+    currentNode,
+    status: "stopped",
+    error,
+    nodeResults
+  };
+}
+
+function renderAll() {
+  rebuildFlowForMode();
+  renderModeSwitch();
+  renderConfigTabs();
+  renderConfigForm();
+  renderLogLevelControl();
+  renderSnapshot(lastSnapshot);
+}
+
+function renderModeSwitch() {
+  const mode = getRegisterMode();
+  const isRunning = lastSnapshot?.status === "running";
+  dom.emailRegisterModeInput.checked = mode === "email_register";
+  dom.reauthorizeModeInput.checked = mode === "reauthorize";
+  dom.emailRegisterModeInput.disabled = isRunning;
+  dom.reauthorizeModeInput.disabled = isRunning;
+}
+
+async function updateRegisterMode(mode) {
+  if (lastSnapshot?.status === "running") {
+    renderModeSwitch();
+    showConfigMessage("流程运行中不能切换模式", true);
+    return;
+  }
+  if (getRegisterMode() === mode) {
+    renderModeSwitch();
+    return;
+  }
+  setConfigValue(appConfig, "register.mode", mode);
+  await saveConfig(appConfig);
+  rebuildFlowForMode();
+  if (activeConfigGroup === "reauthorize" && mode !== "reauthorize") {
+    activeConfigGroup = "register";
+  }
+  renderModeSwitch();
+  renderConfigTabs();
+  renderConfigForm();
+  renderSnapshot(lastSnapshot);
+  await renderHistoryPanel();
+  showConfigMessage(mode === "reauthorize" ? "已切换到重新授权模式" : "已切换到邮箱注册模式");
+}
+
+function rebuildFlowForMode() {
+  flow = buildRegisterFlow(getRegisterMode());
+}
+
+function renderConfigTabs() {
+  dom.configTabs.innerHTML = "";
+  for (const [key, label] of CONFIG_GROUPS) {
+    if (key === "reauthorize" && getRegisterMode() !== "reauthorize") {
+      continue;
+    }
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = key === activeConfigGroup ? "config-tab active" : "config-tab";
+    button.textContent = label;
+    button.addEventListener("click", () => {
+      activeConfigGroup = key;
+      renderConfigTabs();
+      renderConfigForm();
+    });
+    dom.configTabs.append(button);
+  }
+}
+
+function renderConfigForm() {
+  dom.configForm.innerHTML = "";
+  const schema = CONFIG_SCHEMAS[activeConfigGroup] || [];
+  if (!schema.length) {
+    const empty = document.createElement("p");
+    empty.className = "empty-config";
+    empty.textContent = "当前分组没有可配置项";
+    dom.configForm.append(empty);
+    return;
+  }
+
+  let currentSection = null;
+  for (const item of schema) {
+    if (item.visible && !item.visible()) {
+      continue;
+    }
+    if (item.kind === "section") {
+      currentSection = document.createElement("section");
+      currentSection.className = "config-section";
+      const title = document.createElement("div");
+      title.className = "config-section-title";
+      title.textContent = item.label;
+      currentSection.append(title);
+      dom.configForm.append(currentSection);
+      continue;
+    }
+    if (!currentSection) {
+      currentSection = document.createElement("section");
+      currentSection.className = "config-section";
+      dom.configForm.append(currentSection);
+    }
+    currentSection.append(renderConfigField(item));
+  }
+  if (activeConfigGroup === "register") {
+    refreshLatestActivationSummary().catch((error) => {
+      logger.warn("读取最近缓存手机号失败", { error: error.message });
+    });
+  }
+}
+
+function renderConfigField(field) {
+  const row = document.createElement("div");
+  row.className = "config-field";
+
+  const label = document.createElement("span");
+  label.className = "config-label";
+  label.innerHTML = `<strong></strong>${field.help ? "<span></span>" : ""}`;
+  label.querySelector("strong").textContent = field.label;
+  if (field.help) {
+    label.querySelector("span").textContent = field.help;
+  }
+
+  const control = document.createElement("span");
+  control.className = "config-control";
+  const input = createControl(field);
+  control.append(input);
+  row.append(label, control);
+  return row;
+}
+
+function createControl(field) {
+  if (field.type === "radio") {
+    const wrapper = document.createElement("span");
+    wrapper.className = "radio-group";
+    const currentValue = String(getConfigValue(appConfig, field.path) ?? "");
+    for (const [value, label] of field.options) {
+      const optionLabel = document.createElement("label");
+      optionLabel.className = "radio-option";
+      const input = document.createElement("input");
+      input.type = "radio";
+      input.name = field.path;
+      input.value = value;
+      input.checked = currentValue === value;
+      input.addEventListener("change", () => {
+        if (input.checked) {
+          handleConfigControlChange(field, value, true);
+        }
+      });
+      optionLabel.append(input, document.createTextNode(label));
+      wrapper.append(optionLabel);
+    }
+    return wrapper;
+  }
+
+  if (field.type === "select" || field.type === "dynamic-select") {
+    const select = document.createElement("select");
+    select.dataset.path = field.path;
+    const options = typeof field.options === "function" ? field.options() : field.options;
+    for (const [value, label] of options) {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = label;
+      select.append(option);
+    }
+    select.value = String(getConfigValue(appConfig, field.path) ?? "");
+    select.addEventListener("change", () => handleConfigControlChange(field, select.value, true));
+    return select;
+  }
+
+  if (field.type === "country") {
+    const wrapper = document.createElement("span");
+    wrapper.className = "country-picker";
+    const input = document.createElement("input");
+    const listId = `country-list-${field.path.replace(/[^a-z0-9]/gi, "-")}`;
+    input.setAttribute("list", listId);
+    input.dataset.path = field.path;
+    const currentCountryDisplay = () => formatSelectedCountryValue(field.countries, getConfigValue(appConfig, field.path));
+    input.value = currentCountryDisplay();
+
+    const datalist = document.createElement("datalist");
+    datalist.id = listId;
+    for (const country of field.countries) {
+      const option = document.createElement("option");
+      option.value = formatCountryOption(country);
+      datalist.append(option);
+    }
+
+    input.addEventListener("focus", () => {
+      input.value = "";
+    });
+    input.addEventListener("blur", () => {
+      if (!input.value.trim()) {
+        input.value = currentCountryDisplay();
+      }
+    });
+    input.addEventListener("change", () => {
+      const country = findCountryByInput(field.countries, input.value);
+      if (!country) {
+        input.value = currentCountryDisplay();
+        showConfigMessage("请选择国家列表中的项目，或输入有效国家编号", true);
+        return;
+      }
+      input.value = formatCountryOption(country);
+      handleConfigControlChange(field, country.id, false);
+    });
+
+    wrapper.append(input, datalist);
+    return wrapper;
+  }
+
+  if (field.type === "action") {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "config-action-button";
+    button.textContent = field.buttonText || field.label;
+    button.addEventListener("click", async () => {
+      const originalText = button.textContent;
+      button.disabled = true;
+      button.textContent = "处理中...";
+      try {
+        await field.action();
+      } finally {
+        button.disabled = false;
+        button.textContent = originalText;
+      }
+    });
+    return button;
+  }
+
+  if (field.type === "checkbox") {
+    const wrapper = document.createElement("span");
+    wrapper.className = "switch-control";
+    const switchLabel = document.createElement("label");
+    switchLabel.className = "switch-field";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.dataset.path = field.path;
+    checkbox.checked = getConfigValue(appConfig, field.path) === true;
+    const track = document.createElement("span");
+    track.className = "switch-track";
+    const text = document.createElement("span");
+    text.textContent = checkbox.checked ? "开启" : "关闭";
+    checkbox.addEventListener("change", () => {
+      text.textContent = checkbox.checked ? "开启" : "关闭";
+      handleConfigControlChange(field, checkbox.checked, true);
+    });
+    switchLabel.append(checkbox, track, text);
+    wrapper.append(switchLabel);
+    if (field.summary) {
+      const summary = document.createElement("span");
+      summary.className = "switch-summary";
+      summary.dataset.latestActivationSummary = "true";
+      summary.textContent = field.summary();
+      wrapper.append(summary);
+    }
+    return wrapper;
+  }
+
+  const input = document.createElement("input");
+  input.dataset.path = field.path;
+  input.type = field.type === "number" ? "number" : "text";
+  if (field.type === "number") {
+    input.step = "any";
+  }
+  input.value = getConfigValue(appConfig, field.path) ?? "";
+  input.addEventListener("input", () => {
+    const value = field.type === "number"
+      ? (input.value === "" ? 0 : Number(input.value))
+      : input.value;
+    handleConfigControlChange(field, value, false);
+  });
+  return input;
+}
+
+function handleConfigControlChange(field, value, rerender) {
+  setConfigValue(appConfig, field.path, coerceConfigValue(field, value));
+  if (field.path === "register.mode") {
+    rebuildFlowForMode();
+    renderModeSwitch();
+    if (activeConfigGroup === "reauthorize" && getRegisterMode() !== "reauthorize") {
+      activeConfigGroup = "register";
+    }
+    renderHistoryPanel();
+    renderSnapshot(lastSnapshot);
+  }
+  if (field.path === "ui.theme") {
+    applyTheme();
+  }
+  if (field.path === "register.reuseMinIntervalSeconds") {
+    refreshLatestActivationSummary();
+  }
+  scheduleConfigSave();
+  if (rerender || field.rerender) {
+    renderConfigForm();
+    renderConfigTabs();
+  }
+}
+
+function coerceConfigValue(field, value) {
+  if (field.type === "number") {
+    return Number(value);
+  }
+  if (field.path.endsWith("GroupId") && value !== "") {
+    return Number(value);
+  }
+  return value;
+}
+
+function scheduleConfigSave() {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(async () => {
+    await saveConfig(appConfig);
+    showConfigMessage("配置已自动保存");
+  }, 180);
+}
+
+async function toggleTheme() {
+  const currentTheme = getConfigValue(appConfig, "ui.theme") === "light" ? "light" : "dark";
+  await updateTheme(currentTheme === "light" ? "dark" : "light");
+}
+
+async function updateTheme(theme) {
+  setConfigValue(appConfig, "ui.theme", theme);
+  applyTheme();
+  await saveConfig(appConfig);
+  if (activeConfigGroup === "ui") {
+    renderConfigForm();
+  }
+  showConfigMessage("主题已保存");
+}
+
+function applyTheme() {
+  const theme = getConfigValue(appConfig, "ui.theme") === "light" ? "light" : "dark";
+  document.body.dataset.theme = theme;
+  dom.themeToggleButton.classList.toggle("dark-active", theme === "dark");
+  dom.themeToggleButton.title = theme === "light" ? "切换到深色" : "切换到浅色";
+  dom.themeToggleButton.setAttribute("aria-label", dom.themeToggleButton.title);
+  dom.themeToggleButton.innerHTML = theme === "light"
+    ? `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2"></path><path d="M12 20v2"></path><path d="m4.93 4.93 1.41 1.41"></path><path d="m17.66 17.66 1.41 1.41"></path><path d="M2 12h2"></path><path d="M20 12h2"></path><path d="m6.34 17.66-1.41 1.41"></path><path d="m19.07 4.93-1.41 1.41"></path></svg>`
+    : `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 14.5A8.5 8.5 0 0 1 9.5 3.5 7 7 0 1 0 20.5 14.5Z"></path></svg>`;
+}
+
+function renderLogLevelControl() {
+  dom.logLevelSelect.value = getConfigValue(appConfig, "logging.level") || "INFO";
+}
+
+async function importConfig(event) {
+  const file = event.target.files?.[0];
+  if (!file) {
+    return;
+  }
+  try {
+    appConfig = normalizeConfig(JSON.parse(await file.text()));
+    await saveConfig(appConfig);
+    applyTheme();
+    renderConfigTabs();
+    renderConfigForm();
+    renderLogLevelControl();
+    showConfigMessage("配置导入成功，已自动保存");
+  } catch (error) {
+    showConfigMessage(`配置导入失败: ${error.message}`, true);
+  } finally {
+    event.target.value = "";
+  }
+}
+
+function exportConfig() {
+  const blob = new Blob([JSON.stringify(appConfig, null, 2)], {
+    type: "application/json"
+  });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = "auto-register-config.json";
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
+function showConfigMessage(message, isError = false) {
+  dom.configMessage.textContent = message;
+  dom.configMessage.classList.toggle("error", isError);
+}
+
+function renderSnapshot(snapshot) {
+  lastSnapshot = snapshot || {};
+
+  const currentNode = lastSnapshot.currentNode || flow.startNode;
+  dom.currentNodeText.textContent = getNodeTitle(currentNode);
+  const currentStart = lastSnapshot.nodeStarts?.[currentNode] || {};
+  const currentResult = lastSnapshot.nodeResults?.[currentNode] || {};
+  dom.attemptText.textContent = currentResult.attempt ? `第 ${currentResult.attempt} 次` : "-";
+  dom.nodeStartUrl.textContent = currentStart.url || "-";
+  dom.nodeResultText.textContent = currentResult.error || translateResultStatus(currentResult.resultStatus || currentResult.status) || "-";
+  dom.accountSummary.textContent = formatAccount(lastSnapshot.state?.account);
+  updateRunButtons(lastSnapshot);
+  renderNodeGraph(lastSnapshot);
+  if (activeConfigGroup === "register") {
+    refreshLatestActivationSummary().catch(() => {});
+  }
+}
+
+function updateRunButtons(snapshot) {
+  const status = snapshot.status || "idle";
+  const hasStarted = Boolean(snapshot.startedAt) || Object.keys(snapshot.nodeResults || {}).length > 0;
+  const isRunning = status === "running";
+  const retryPolicy = snapshot.currentNode
+    ? getManualRetryPolicy(getRegisterMode(), snapshot.currentNode)
+    : { retryable: false };
+  const canContinue = hasStarted && !isRunning && status !== "success" && status !== "failed";
+  const canRetry = hasStarted && !isRunning && status !== "success" && retryPolicy.retryable;
+  const isReauthorizeMode = getRegisterMode() === "reauthorize";
+
+  dom.startFreshButton.disabled = isRunning || isReauthorizeMode;
+  dom.continueButton.disabled = !canContinue;
+  dom.retryButton.disabled = !canRetry;
+  dom.stopButton.disabled = !isRunning;
+  renderModeSwitch();
+}
+
+function renderNodeGraph(snapshot) {
+  dom.nodeGraph.innerHTML = "";
+  for (const nodeName of getNodeOrder(getRegisterMode())) {
+    const node = flow.getNode(nodeName);
+    const result = snapshot.nodeResults?.[nodeName];
+    let status = result?.status || "pending";
+    if (snapshot.status === "running" && snapshot.currentNode === nodeName) {
+      status = "running";
+    }
+    const item = document.createElement("div");
+    item.className = `node-item ${status}`;
+    item.innerHTML = `
+      <span class="node-dot"></span>
+      <span class="node-title"></span>
+      <span class="node-status"></span>
+    `;
+    item.querySelector(".node-title").textContent = node.title;
+    item.querySelector(".node-status").textContent = formatNodeStatusText(nodeName, result, status, snapshot);
+    dom.nodeGraph.append(item);
+  }
+}
+
+function formatNodeStatusText(nodeName, result, status, snapshot) {
+  const statusText = translateResultStatus(result?.resultStatus) || translateStatus(status);
+  const detail = getNodeDetailText(nodeName, snapshot);
+  return detail ? `${statusText} · ${detail}` : statusText;
+}
+
+function getNodeDetailText(nodeName, snapshot) {
+  const state = snapshot.state || {};
+  const account = state.account || {};
+  if (nodeName === "fill_email_and_submit") {
+    return account.emailAddress || state.emailAccount?.emailAddress || "";
+  }
+  if (nodeName === "wait_email_verification_code") {
+    return account.emailVerificationCode || state.emailVerificationCode || "";
+  }
+  if (nodeName === "add_phone_number") {
+    const mobile = account.mobile || state.smsMobileNumber?.mobileNumber || "";
+    return mobile ? formatMobile(mobile) : "";
+  }
+  if (nodeName === "wait_sms_verification_code") {
+    return account.smsVerificationCode || state.smsVerificationCode || "";
+  }
+  return "";
+}
+
+async function renderLogs() {
+  dom.logList.innerHTML = "";
+  renderedLogIds.clear();
+  const logs = await loadLogs();
+  for (const entry of logs.slice(-250)) {
+    appendLogEntry(entry);
+  }
+}
+
+function appendLogEntry(entry) {
+  if (!entry?.id || renderedLogIds.has(entry.id)) {
+    return;
+  }
+  if (!shouldDisplayLog(entry)) {
+    return;
+  }
+  renderedLogIds.add(entry.id);
+  const row = document.createElement("div");
+  row.className = "log-entry";
+  row.innerHTML = `
+    <span class="log-time"></span>
+    <span class="log-level"></span>
+    <span class="log-message"></span>
+  `;
+  row.querySelector(".log-time").textContent = new Date(entry.time).toLocaleTimeString("zh-CN", { hour12: false });
+  const level = row.querySelector(".log-level");
+  level.textContent = LOG_LEVEL_LABELS[entry.level] || entry.level || "";
+  level.classList.add(entry.level);
+  const dataText = entry.data ? ` ${JSON.stringify(entry.data)}` : "";
+  row.querySelector(".log-message").textContent = `[${entry.source}] ${entry.message}${dataText}`;
+  dom.logList.append(row);
+  dom.logList.scrollTop = dom.logList.scrollHeight;
+}
+
+function appendNewLogEntries(logs) {
+  for (const entry of logs.slice(-250)) {
+    appendLogEntry(entry);
+  }
+}
+
+function shouldDisplayLog(entry) {
+  const currentLevel = getConfigValue(appConfig, "logging.level") || "INFO";
+  const currentWeight = LOG_LEVEL_WEIGHT[currentLevel] ?? LOG_LEVEL_WEIGHT.INFO;
+  const entryWeight = LOG_LEVEL_WEIGHT[entry.level] ?? LOG_LEVEL_WEIGHT.INFO;
+  return entryWeight >= currentWeight;
+}
+
+function getNodeTitle(nodeName) {
+  if (!nodeName) {
+    return "未运行";
+  }
+  try {
+    return flow.getNode(nodeName).title;
+  } catch {
+    return nodeName;
+  }
+}
+
+function translateStatus(status) {
+  return STATUS_LABELS[status] || RESULT_STATUS_LABELS[status] || "未知";
+}
+
+function translateResultStatus(status) {
+  if (!status) {
+    return "";
+  }
+  return RESULT_STATUS_LABELS[status] || STATUS_LABELS[status] || "未知状态";
+}
+
+function formatAccount(account) {
+  if (!account) {
+    return "-";
+  }
+  return [
+    account.emailAddress,
+    account.mobile ? `+${account.mobile}` : "",
+    account.name,
+    account.age ? `${account.age}岁` : "",
+    account.birthDate?.value ? `生日:${account.birthDate.value}` : "",
+    account.password ? `密码:${account.password}` : "",
+    account.emailVerificationCode ? `邮箱码:${account.emailVerificationCode}` : "",
+    account.smsVerificationCode ? `短信码:${account.smsVerificationCode}` : ""
+  ].filter(Boolean).join(" · ");
+}
+
+function section(label, visible = null) {
+  return { kind: "section", label, visible };
+}
+
+function textField(label, path, help = "", visible = null) {
+  return { kind: "field", type: "text", label, path, help, visible };
+}
+
+function numberField(label, path, unit = "", visible = null) {
+  return { kind: "field", type: "number", label, path, help: unit, visible };
+}
+
+function checkboxField(label, path, visible = null, options = {}) {
+  return { kind: "field", type: "checkbox", label, path, visible, rerender: true, ...options };
+}
+
+function radioField(label, path, options, help = "", visible = null) {
+  return { kind: "field", type: "radio", label, path, options, help, visible, rerender: true };
+}
+
+function selectField(label, path, options, help = "", visible = null) {
+  return { kind: "field", type: "select", label, path, options, help, visible, rerender: true };
+}
+
+function dynamicSelectField(label, path, options, help = "", visible = null) {
+  return { kind: "field", type: "dynamic-select", label, path, options, help, visible, rerender: true };
+}
+
+function countryField(label, path, countries, visible = null) {
+  return { kind: "field", type: "country", label, path, countries, visible };
+}
+
+function actionField(label, help, action, visible = null) {
+  return { kind: "field", type: "action", label, help, action, visible, buttonText: label };
+}
+
+function getConfigValue(config, path) {
+  return path.split(".").reduce((value, key) => value?.[key], config);
+}
+
+function getRegisterMode() {
+  return getConfigValue(appConfig, "register.mode") || "email_register";
+}
+
+function setConfigValue(config, path, value) {
+  const keys = path.split(".");
+  let target = config;
+  for (const key of keys.slice(0, -1)) {
+    if (!target[key] || typeof target[key] !== "object") {
+      target[key] = {};
+    }
+    target = target[key];
+  }
+  target[keys[keys.length - 1]] = value;
+}
+
+async function refreshOutlookGroups() {
+  try {
+    const groups = await createServices(appConfig).emailService.listGroups();
+    outlookGroups = groups
+      .slice()
+      .sort((left, right) => {
+        const leftOrder = Number(left.sort_position ?? left.sort_order ?? 0);
+        const rightOrder = Number(right.sort_position ?? right.sort_order ?? 0);
+        if (leftOrder !== rightOrder) {
+          return leftOrder - rightOrder;
+        }
+        return String(left.name || "").localeCompare(String(right.name || ""));
+      });
+    await saveOutlookGroups(outlookGroups);
+    renderConfigForm();
+    showConfigMessage(`Outlook 分组已刷新：${outlookGroups.length} 个`);
+  } catch (error) {
+    showConfigMessage(`刷新 Outlook 分组失败：${error.message}`, true);
+  }
+}
+
+function getOutlookGroupOptions() {
+  const currentIds = [
+    getConfigValue(appConfig, "emailService.providers.outlook_mail.outlook.poolGroupId"),
+    getConfigValue(appConfig, "emailService.providers.outlook_mail.outlook.registeredGroupId"),
+    getConfigValue(appConfig, "emailService.providers.outlook_mail.outlook.deletedGroupId")
+  ].filter((value) => value !== undefined && value !== null && value !== "");
+  const options = outlookGroups.map((group) => [
+    String(group.id),
+    `${group.name || `分组 ${group.id}`}（ID ${group.id}，${group.account_count ?? 0} 个账号）`
+  ]);
+  const optionIds = new Set(options.map(([id]) => id));
+  for (const id of currentIds) {
+    const normalizedId = String(id);
+    if (!optionIds.has(normalizedId)) {
+      options.unshift([normalizedId, `当前配置 ID ${normalizedId}`]);
+    }
+  }
+  if (!options.length) {
+    options.push(["", "请先刷新分组"]);
+  }
+  return options;
+}
+
+function formatSelectedCountryValue(countries, value) {
+  const country = countries.find((item) => String(item.id) === String(value));
+  return country ? formatCountryOption(country) : String(value ?? "");
+}
+
+function formatCountryOption(country) {
+  const chineseName = country.raw?.chn || "";
+  const englishName = country.raw?.eng || country.name || "";
+  const name = chineseName && englishName && chineseName !== englishName
+    ? `${chineseName} / ${englishName}`
+    : chineseName || englishName || country.name;
+  return `${name}（ID ${country.id}）`;
+}
+
+function findCountryByInput(countries, value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (!normalized) {
+    return null;
+  }
+  return countries.find((country) => {
+    const candidates = [
+      country.id,
+      country.name,
+      country.raw?.chn,
+      country.raw?.eng,
+      country.raw?.rus,
+      formatCountryOption(country)
+    ];
+    return candidates.some((candidate) => String(candidate || "").trim().toLowerCase() === normalized);
+  }) || null;
+}
