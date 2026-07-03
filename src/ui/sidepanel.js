@@ -14,6 +14,8 @@ const dom = {
   themeToggleButton: document.querySelector("#themeToggleButton"),
   emailRegisterModeInput: document.querySelector("#emailRegisterModeInput"),
   reauthorizeModeInput: document.querySelector("#reauthorizeModeInput"),
+  reauthorizeManualPanel: document.querySelector("#reauthorizeManualPanel"),
+  reauthorizeEmailInput: document.querySelector("#reauthorizeEmailInput"),
   startFreshButton: document.querySelector("#startFreshButton"),
   continueButton: document.querySelector("#continueButton"),
   retryButton: document.querySelector("#retryButton"),
@@ -279,6 +281,11 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
 function bindEvents() {
   dom.emailRegisterModeInput.addEventListener("change", () => updateRegisterMode("email_register"));
   dom.reauthorizeModeInput.addEventListener("change", () => updateRegisterMode("reauthorize"));
+  dom.reauthorizeEmailInput.addEventListener("input", () => {
+    if (getRegisterMode() === "reauthorize") {
+      showConfigMessage("");
+    }
+  });
   dom.startFreshButton.addEventListener("click", startFresh);
   dom.continueButton.addEventListener("click", continueRun);
   dom.retryButton.addEventListener("click", retryCurrentNode);
@@ -304,10 +311,13 @@ function bindEvents() {
 
 async function startFresh() {
   if (getRegisterMode() === "reauthorize") {
-    showConfigMessage("重新授权模式请在历史记录中选择账号执行", true);
-    await renderHistoryPanel();
+    await startManualReauthorize();
     return;
   }
+  await startEmailRegisterFresh();
+}
+
+async function startEmailRegisterFresh() {
   const errors = validateConfig(appConfig);
   if (errors.length) {
     showConfigMessage(errors.join("；"), true);
@@ -328,6 +338,30 @@ async function startFresh() {
       runner = null;
     }
   }
+}
+
+async function startManualReauthorize() {
+  if (lastSnapshot.status === "running") {
+    showConfigMessage("流程正在运行，不能启动重新授权", true);
+    return;
+  }
+  const emailAddress = normalizeEmailAddress(dom.reauthorizeEmailInput.value);
+  if (!isValidEmailAddress(emailAddress)) {
+    showConfigMessage("请输入有效的授权邮箱", true);
+    dom.reauthorizeEmailInput.focus();
+    return;
+  }
+  const errors = validateConfig(appConfig);
+  if (errors.length) {
+    showConfigMessage(errors.join("；"), true);
+    return;
+  }
+
+  await runReauthorizeFlow(buildManualReauthorizeState(emailAddress), {
+    email: emailAddress,
+    emailMode: resolveManualEmailMode(),
+    source: "manual"
+  });
 }
 
 async function continueRun() {
@@ -659,6 +693,15 @@ async function startReauthorize(record) {
     showConfigMessage(errors.join("；"), true);
     return;
   }
+
+  await runReauthorizeFlow(buildReauthorizeState(record), {
+    email: record.emailAddress,
+    emailMode: record.emailMode,
+    source: "history"
+  });
+}
+
+async function runReauthorizeFlow(initialState, logData = {}) {
   setConfigValue(appConfig, "register.mode", "reauthorize");
   await saveConfig(appConfig);
   rebuildFlowForMode();
@@ -669,12 +712,13 @@ async function startReauthorize(record) {
 
   const tabs = new TabController();
   const initialSnapshot = await createInitialSnapshot(flow);
-  const ctx = createRunContext(tabs, initialSnapshot, buildReauthorizeState(record));
+  const ctx = createRunContext(tabs, initialSnapshot, initialState);
   const currentRunner = new FlowRunner(flow, ctx, renderSnapshot);
   runner = currentRunner;
   logger.info("开始重新授权流程", {
-    email: record.emailAddress,
-    emailMode: record.emailMode
+    email: logData.email || initialState.account?.emailAddress || "",
+    emailMode: logData.emailMode || initialState.emailAccount?.attributes?.mode || "",
+    source: logData.source || ""
   });
   try {
     await currentRunner.run();
@@ -683,6 +727,22 @@ async function startReauthorize(record) {
       runner = null;
     }
   }
+}
+
+function buildManualReauthorizeState(emailAddress) {
+  const emailAccount = buildManualEmailAccount(emailAddress);
+  return {
+    emailAccount,
+    account: {
+      emailAddress,
+      mobile: "",
+      name: "",
+      age: "",
+      password: "",
+      emailVerificationCode: "",
+      smsVerificationCode: ""
+    }
+  };
 }
 
 function buildReauthorizeState(record) {
@@ -699,6 +759,30 @@ function buildReauthorizeState(record) {
       smsVerificationCode: ""
     }
   };
+}
+
+function buildManualEmailAccount(emailAddress) {
+  return {
+    emailAddress,
+    attributes: {
+      mode: resolveManualEmailMode(),
+      manual: true
+    }
+  };
+}
+
+function resolveManualEmailMode() {
+  return getConfigValue(appConfig, "emailService.providers.outlook_mail.useTempEmail") === true
+    ? "temp"
+    : "outlook";
+}
+
+function normalizeEmailAddress(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function isValidEmailAddress(value) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 }
 
 function formatMobile(value) {
@@ -817,10 +901,13 @@ function renderAll() {
 function renderModeSwitch() {
   const mode = getRegisterMode();
   const isRunning = lastSnapshot?.status === "running";
+  const isReauthorizeMode = mode === "reauthorize";
   dom.emailRegisterModeInput.checked = mode === "email_register";
-  dom.reauthorizeModeInput.checked = mode === "reauthorize";
+  dom.reauthorizeModeInput.checked = isReauthorizeMode;
   dom.emailRegisterModeInput.disabled = isRunning;
   dom.reauthorizeModeInput.disabled = isRunning;
+  dom.reauthorizeManualPanel.hidden = !isReauthorizeMode;
+  dom.reauthorizeEmailInput.disabled = isRunning || !isReauthorizeMode;
 }
 
 async function updateRegisterMode(mode) {
@@ -1210,9 +1297,8 @@ function updateRunButtons(snapshot) {
     : { retryable: false };
   const canContinue = hasStarted && !isRunning && status !== "success" && status !== "failed";
   const canRetry = hasStarted && !isRunning && status !== "success" && retryPolicy.retryable;
-  const isReauthorizeMode = getRegisterMode() === "reauthorize";
 
-  dom.startFreshButton.disabled = isRunning || isReauthorizeMode;
+  dom.startFreshButton.disabled = isRunning;
   dom.continueButton.disabled = !canContinue;
   dom.retryButton.disabled = !canRetry;
   dom.stopButton.disabled = !isRunning;
