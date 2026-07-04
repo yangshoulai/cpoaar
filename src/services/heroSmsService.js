@@ -33,6 +33,28 @@ export class HeroSmsService {
     return this._requestNewMobileNumber();
   }
 
+  async getPriceOptions(options = {}) {
+    const payload = await this._requestJson({
+      action: "getTopCountriesByService",
+      api_key: this.config.apiKey,
+      service: this.constructor.serviceCode,
+      freePrice: true
+    }, options);
+    return normalizeHeroPrices(payload, {
+      provider: this.constructor.provider,
+      serviceCode: this.constructor.serviceCode,
+      countryId: this.config.countryId
+    });
+  }
+
+  async getBalance(options = {}) {
+    const text = await this._requestText({
+      action: "getBalance",
+      api_key: this.config.apiKey
+    }, options);
+    return parseHeroBalance(text);
+  }
+
   async getLatestVerificationCode(mobileNumber, sentAfter, options = {}) {
     const activationId = requireAttribute(mobileNumber, "activationId");
     const timeoutMs = Number(this.config.verificationCodeWaitTimeout || 125) * 1000;
@@ -257,6 +279,102 @@ function mobileFromRecord(record, extraAttributes) {
       ...extraAttributes
     }
   };
+}
+
+function normalizeHeroPrices(payload, base) {
+  const rows = getHeroCountryPriceRows(payload, base);
+  const options = [];
+  for (const row of rows) {
+    for (const priceOption of getHeroCountryPriceOptions(row.record)) {
+      options.push({
+        ...base,
+        countryId: row.countryId,
+        providerId: `${base.serviceCode}:${row.countryId}`,
+        price: priceOption.price,
+        count: priceOption.count,
+        physicalCount: Number(row.record?.physicalCount || 0),
+        raw: row.record
+      });
+    }
+  }
+  return sortPriceOptions(options);
+}
+
+function getHeroCountryPriceRows(payload, base) {
+  if (!payload || typeof payload !== "object") {
+    return [];
+  }
+  return Object.values(payload).flatMap((record) => {
+    if (!record || typeof record !== "object") {
+      return [];
+    }
+    const countryId = String(record.country ?? "");
+    if (countryId !== String(base.countryId)) {
+      return [];
+    }
+    return [{
+      countryId,
+      record
+    }];
+  });
+}
+
+function getHeroCountryPriceOptions(record) {
+  const priceOptions = Object.entries(record?.freePriceMap || {}).flatMap(([price, count]) => {
+    const numericPrice = Number(price);
+    if (!Number.isFinite(numericPrice)) {
+      return [];
+    }
+    return [{
+      price: numericPrice,
+      count: Number(count || 0)
+    }];
+  });
+  if (priceOptions.length) {
+    return dedupeHeroPriceOptions(priceOptions);
+  }
+
+  return dedupeHeroPriceOptions([record?.price, record?.retail_price].flatMap((price) => {
+    const numericPrice = Number(price);
+    if (!Number.isFinite(numericPrice)) {
+      return [];
+    }
+    return [{
+      price: numericPrice,
+      count: Number(record?.count || 0)
+    }];
+  }));
+}
+
+function dedupeHeroPriceOptions(options) {
+  const byPrice = new Map();
+  for (const option of options) {
+    const key = String(option.price);
+    const existing = byPrice.get(key);
+    if (!existing || option.count > existing.count) {
+      byPrice.set(key, option);
+    }
+  }
+  return [...byPrice.values()].sort((left, right) => (
+    left.price - right.price
+    || right.count - left.count
+  ));
+}
+
+function sortPriceOptions(options) {
+  return options.sort((left, right) => (
+    left.price - right.price
+    || right.count - left.count
+    || String(left.providerId).localeCompare(String(right.providerId))
+  ));
+}
+
+function parseHeroBalance(text) {
+  const match = String(text || "").trim().match(/^ACCESS_BALANCE:\s*(-?\d+(?:\.\d+)?)$/i);
+  if (!match) {
+    throw new Error(`HeroSMS 余额响应异常: ${text}`);
+  }
+  return Number(match[1]);
 }
 
 function requireAttribute(mobileNumber, name) {

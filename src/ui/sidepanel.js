@@ -88,15 +88,16 @@ const CONFIG_SCHEMAS = {
     section("HeroSMS", () => getConfigValue(appConfig, "smsService.provider") === "hero_sms"),
     textField("接口地址", "smsService.providers.hero_sms.baseUrl", "", () => getConfigValue(appConfig, "smsService.provider") === "hero_sms"),
     textField("API Key", "smsService.providers.hero_sms.apiKey", "", () => getConfigValue(appConfig, "smsService.provider") === "hero_sms"),
-    countryField("目标国家", "smsService.providers.hero_sms.countryId", HERO_SMS_COUNTRIES, () => getConfigValue(appConfig, "smsService.provider") === "hero_sms"),
-    numberField("最大价格", "smsService.providers.hero_sms.maxPrice", "", () => getConfigValue(appConfig, "smsService.provider") === "hero_sms"),
+    balanceActionField("余额", "查询当前 HeroSMS 账户余额。", queryHeroSmsBalance, () => getConfigValue(appConfig, "smsService.provider") === "hero_sms"),
+    countryField("目标国家", "smsService.providers.hero_sms.countryId", HERO_SMS_COUNTRIES, "hero_sms", () => getConfigValue(appConfig, "smsService.provider") === "hero_sms"),
+    priceField("最大价格", "smsService.providers.hero_sms.maxPrice", "hero_sms", "max", "", () => getConfigValue(appConfig, "smsService.provider") === "hero_sms"),
     numberField("验证码超时", "smsService.providers.hero_sms.verificationCodeWaitTimeout", "秒", () => getConfigValue(appConfig, "smsService.provider") === "hero_sms"),
     section("SMSBower", () => getConfigValue(appConfig, "smsService.provider") === "sms_bower" || getConfigValue(appConfig, "smsService.provider") === "smsbower"),
     textField("接口地址", "smsService.providers.sms_bower.baseUrl", "", () => getConfigValue(appConfig, "smsService.provider") === "sms_bower" || getConfigValue(appConfig, "smsService.provider") === "smsbower"),
     textField("API Key", "smsService.providers.sms_bower.apiKey", "", () => getConfigValue(appConfig, "smsService.provider") === "sms_bower" || getConfigValue(appConfig, "smsService.provider") === "smsbower"),
-    countryField("目标国家", "smsService.providers.sms_bower.countryId", SMS_BOWER_COUNTRIES, () => getConfigValue(appConfig, "smsService.provider") === "sms_bower" || getConfigValue(appConfig, "smsService.provider") === "smsbower"),
+    countryField("目标国家", "smsService.providers.sms_bower.countryId", SMS_BOWER_COUNTRIES, "sms_bower", () => getConfigValue(appConfig, "smsService.provider") === "sms_bower" || getConfigValue(appConfig, "smsService.provider") === "smsbower"),
     numberField("最低价格", "smsService.providers.sms_bower.minPrice", "", () => getConfigValue(appConfig, "smsService.provider") === "sms_bower" || getConfigValue(appConfig, "smsService.provider") === "smsbower"),
-    numberField("最高价格", "smsService.providers.sms_bower.maxPrice", "", () => getConfigValue(appConfig, "smsService.provider") === "sms_bower" || getConfigValue(appConfig, "smsService.provider") === "smsbower"),
+    priceField("最高价格", "smsService.providers.sms_bower.maxPrice", "sms_bower", "max", "", () => getConfigValue(appConfig, "smsService.provider") === "sms_bower" || getConfigValue(appConfig, "smsService.provider") === "smsbower"),
     numberField("验证码超时", "smsService.providers.sms_bower.verificationCodeWaitTimeout", "秒", () => getConfigValue(appConfig, "smsService.provider") === "sms_bower" || getConfigValue(appConfig, "smsService.provider") === "smsbower"),
     numberField("激活有效期", "smsService.providers.sms_bower.activationValidSeconds", "秒", () => getConfigValue(appConfig, "smsService.provider") === "sms_bower" || getConfigValue(appConfig, "smsService.provider") === "smsbower")
   ],
@@ -233,6 +234,13 @@ let latestActivationRecord = await activationStore.getLatestActivation();
 let historyFilterValue = "";
 let historyPage = 1;
 const HISTORY_PAGE_SIZE = 10;
+const smsPriceLookupState = {};
+const heroSmsBalanceState = {
+  queried: false,
+  loading: false,
+  balance: null,
+  error: ""
+};
 
 applyTheme();
 renderAll();
@@ -1052,6 +1060,9 @@ function renderConfigField(field) {
   const control = document.createElement("span");
   control.className = "config-control";
   const input = createControl(field);
+  if (input.dataset?.hasSubcontrol === "true") {
+    row.classList.add("has-subcontrol");
+  }
   control.append(input);
   row.append(label, control);
   return row;
@@ -1097,44 +1108,7 @@ function createControl(field) {
   }
 
   if (field.type === "country") {
-    const wrapper = document.createElement("span");
-    wrapper.className = "country-picker";
-    const input = document.createElement("input");
-    const listId = `country-list-${field.path.replace(/[^a-z0-9]/gi, "-")}`;
-    input.setAttribute("list", listId);
-    input.dataset.path = field.path;
-    const currentCountryDisplay = () => formatSelectedCountryValue(field.countries, getConfigValue(appConfig, field.path));
-    input.value = currentCountryDisplay();
-
-    const datalist = document.createElement("datalist");
-    datalist.id = listId;
-    for (const country of field.countries) {
-      const option = document.createElement("option");
-      option.value = formatCountryOption(country);
-      datalist.append(option);
-    }
-
-    input.addEventListener("focus", () => {
-      input.value = "";
-    });
-    input.addEventListener("blur", () => {
-      if (!input.value.trim()) {
-        input.value = currentCountryDisplay();
-      }
-    });
-    input.addEventListener("change", () => {
-      const country = findCountryByInput(field.countries, input.value);
-      if (!country) {
-        input.value = currentCountryDisplay();
-        showConfigMessage("请选择国家列表中的项目，或输入有效国家编号", true);
-        return;
-      }
-      input.value = formatCountryOption(country);
-      handleConfigControlChange(field, country.id, false);
-    });
-
-    wrapper.append(input, datalist);
-    return wrapper;
+    return createCountryControl(field);
   }
 
   if (field.type === "action") {
@@ -1154,6 +1128,10 @@ function createControl(field) {
       }
     });
     return button;
+  }
+
+  if (field.type === "balance-action") {
+    return createBalanceActionControl(field);
   }
 
   if (field.type === "checkbox") {
@@ -1198,7 +1176,130 @@ function createControl(field) {
       : input.value;
     handleConfigControlChange(field, value, false);
   });
+  if (field.priceLookup) {
+    return createPriceControl(field, input);
+  }
   return input;
+}
+
+function createCountryControl(field) {
+  const wrapper = document.createElement("span");
+  wrapper.className = "country-picker";
+  const row = document.createElement("span");
+  row.className = "country-picker-row";
+  const input = document.createElement("input");
+  const listId = `country-list-${field.path.replace(/[^a-z0-9]/gi, "-")}`;
+  input.setAttribute("list", listId);
+  input.dataset.path = field.path;
+  const currentCountryDisplay = () => formatSelectedCountryValue(field.countries, getConfigValue(appConfig, field.path));
+  input.value = currentCountryDisplay();
+
+  const datalist = document.createElement("datalist");
+  datalist.id = listId;
+  for (const country of field.countries) {
+    const option = document.createElement("option");
+    option.value = formatCountryOption(country);
+    datalist.append(option);
+  }
+
+  input.addEventListener("focus", () => {
+    input.value = "";
+  });
+  input.addEventListener("blur", () => {
+    if (!input.value.trim()) {
+      input.value = currentCountryDisplay();
+    }
+  });
+  input.addEventListener("change", () => {
+    const country = findCountryByInput(field.countries, input.value);
+    if (!country) {
+      input.value = currentCountryDisplay();
+      showConfigMessage("请选择国家列表中的项目，或输入有效国家编号", true);
+      return;
+    }
+    input.value = formatCountryOption(country);
+    handleConfigControlChange(field, country.id, false);
+    renderConfigForm();
+    querySmsPrices(field.provider).catch((error) => {
+      logger.warn("自动查询短信价格失败", {
+        provider: field.provider,
+        error: error.message
+      });
+    });
+  });
+
+  const favoriteButton = document.createElement("button");
+  favoriteButton.type = "button";
+  favoriteButton.className = "country-favorite-button";
+  favoriteButton.title = "加入常用国家";
+  favoriteButton.setAttribute("aria-label", "加入常用国家");
+  favoriteButton.textContent = "+";
+  const currentCountryId = String(getConfigValue(appConfig, field.path) || "");
+  favoriteButton.disabled = !currentCountryId || getFavoriteCountryIds(field.provider).includes(currentCountryId);
+  favoriteButton.addEventListener("click", () => addFavoriteCountry(field));
+
+  const tags = renderFavoriteCountryTags(field);
+  if (tags) {
+    wrapper.dataset.hasSubcontrol = "true";
+  }
+  row.append(input, favoriteButton);
+  wrapper.append(row, datalist);
+  if (tags) {
+    wrapper.append(tags);
+  }
+  return wrapper;
+}
+
+function createPriceControl(field, input) {
+  const wrapper = document.createElement("span");
+  wrapper.className = "price-control";
+  const row = document.createElement("span");
+  row.className = "price-control-row";
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "price-query-button";
+  button.textContent = "查询价格";
+  button.disabled = !hasSelectedSmsCountry(field.priceLookup.provider);
+  button.addEventListener("click", () => querySmsPrices(field.priceLookup.provider));
+  const options = renderSmsPriceOptions(field.priceLookup.provider);
+  if (options) {
+    wrapper.dataset.hasSubcontrol = "true";
+  }
+  row.append(input, button);
+  wrapper.append(row);
+  if (options) {
+    wrapper.append(options);
+  }
+  return wrapper;
+}
+
+function createBalanceActionControl(field) {
+  const wrapper = document.createElement("span");
+  wrapper.className = "balance-action-control";
+  const value = document.createElement("span");
+  value.className = "balance-action-value";
+  if (heroSmsBalanceState.loading) {
+    value.textContent = "查询中...";
+  } else if (heroSmsBalanceState.error) {
+    value.classList.add("error");
+    value.textContent = heroSmsBalanceState.error;
+  } else if (heroSmsBalanceState.queried) {
+    value.textContent = formatPrice(heroSmsBalanceState.balance);
+  } else {
+    value.textContent = "未查询";
+  }
+
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "config-action-button";
+  button.textContent = field.buttonText || "查询余额";
+  button.disabled = heroSmsBalanceState.loading;
+  button.addEventListener("click", async () => {
+    await field.action();
+  });
+
+  wrapper.append(value, button);
+  return wrapper;
 }
 
 function handleConfigControlChange(field, value, rerender) {
@@ -1233,6 +1334,288 @@ function coerceConfigValue(field, value) {
     return Number(value);
   }
   return value;
+}
+
+function getSmsProviderConfigPath(provider) {
+  return `smsService.providers.${normalizeSmsProvider(provider)}`;
+}
+
+function getFavoriteCountryIds(provider) {
+  const normalizedProvider = normalizeSmsProvider(provider);
+  const values = getConfigValue(appConfig, `smsService.favoriteCountries.${normalizedProvider}`);
+  return Array.isArray(values) ? values.map(String) : [];
+}
+
+function canQuerySmsPrices(provider) {
+  const path = getSmsProviderConfigPath(provider);
+  return Boolean(
+    getConfigValue(appConfig, `${path}.baseUrl`)
+    && getConfigValue(appConfig, `${path}.apiKey`)
+    && getConfigValue(appConfig, `${path}.countryId`)
+  );
+}
+
+function hasSelectedSmsCountry(provider) {
+  return Boolean(getConfigValue(appConfig, `${getSmsProviderConfigPath(provider)}.countryId`));
+}
+
+async function queryHeroSmsBalance() {
+  const path = getSmsProviderConfigPath("hero_sms");
+  if (!getConfigValue(appConfig, `${path}.baseUrl`) || !getConfigValue(appConfig, `${path}.apiKey`)) {
+    showConfigMessage("请先填写 HeroSMS 接口地址和 API Key", true);
+    return;
+  }
+  heroSmsBalanceState.queried = true;
+  heroSmsBalanceState.loading = true;
+  heroSmsBalanceState.error = "";
+  renderConfigForm();
+  try {
+    const service = createServices({
+      ...appConfig,
+      smsService: {
+        ...appConfig.smsService,
+        provider: "hero_sms"
+      }
+    }).smsService;
+    const balance = await service.getBalance();
+    heroSmsBalanceState.balance = balance;
+    heroSmsBalanceState.error = "";
+    showConfigMessage(`HeroSMS 账户余额：${formatPrice(balance)}`);
+  } catch (error) {
+    heroSmsBalanceState.error = error.message;
+    showConfigMessage(`查询 HeroSMS 余额失败：${error.message}`, true);
+  } finally {
+    heroSmsBalanceState.loading = false;
+    renderConfigForm();
+  }
+}
+
+async function querySmsPrices(provider) {
+  const normalizedProvider = normalizeSmsProvider(provider);
+  const requestId = (smsPriceLookupState[normalizedProvider]?.requestId || 0) + 1;
+  if (!canQuerySmsPrices(normalizedProvider)) {
+    smsPriceLookupState[normalizedProvider] = {
+      requestId,
+      queried: true,
+      loading: false,
+      error: "请先填写接口地址、API Key 和目标国家",
+      options: []
+    };
+    renderConfigForm();
+    return;
+  }
+
+  smsPriceLookupState[normalizedProvider] = {
+    requestId,
+    queried: true,
+    loading: true,
+    error: "",
+    options: []
+  };
+  renderConfigForm();
+
+  try {
+    const service = createServices({
+      ...appConfig,
+      smsService: {
+        ...appConfig.smsService,
+        provider: normalizedProvider
+      }
+    }).smsService;
+    const options = await service.getPriceOptions();
+    if (smsPriceLookupState[normalizedProvider]?.requestId !== requestId) {
+      return;
+    }
+    smsPriceLookupState[normalizedProvider] = {
+      requestId,
+      queried: true,
+      loading: false,
+      error: "",
+      options
+    };
+    showConfigMessage(options.length
+      ? `已获取 ${formatSmsProviderName(normalizedProvider)} 价格：${options.length} 个`
+      : `未获取到 ${formatSmsProviderName(normalizedProvider)} 可用价格`);
+  } catch (error) {
+    if (smsPriceLookupState[normalizedProvider]?.requestId !== requestId) {
+      return;
+    }
+    smsPriceLookupState[normalizedProvider] = {
+      requestId,
+      queried: true,
+      loading: false,
+      error: error.message,
+      options: []
+    };
+    showConfigMessage(`查询短信价格失败：${error.message}`, true);
+  }
+  renderConfigForm();
+}
+
+function renderSmsPriceOptions(provider) {
+  const normalizedProvider = normalizeSmsProvider(provider);
+  const state = smsPriceLookupState[normalizedProvider] || {};
+  if (!state.loading && !state.error && !state.queried && (!Array.isArray(state.options) || !state.options.length)) {
+    return null;
+  }
+  const wrapper = document.createElement("span");
+  wrapper.className = "price-options";
+  if (state.loading) {
+    wrapper.textContent = "价格查询中...";
+    return wrapper;
+  }
+  if (state.error) {
+    wrapper.classList.add("error");
+    wrapper.textContent = state.error;
+    return wrapper;
+  }
+  if (!Array.isArray(state.options) || !state.options.length) {
+    wrapper.textContent = state.queried ? "暂无价格候选" : "";
+    return wrapper;
+  }
+
+  for (const option of state.options) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "price-option";
+    button.textContent = formatPriceOption(option);
+    button.title = `选择价格 ${formatPrice(option.price)}`;
+    button.addEventListener("click", () => applySmsPriceOption(normalizedProvider, option));
+    wrapper.append(button);
+  }
+  return wrapper;
+}
+
+function applySmsPriceOption(provider, option) {
+  const normalizedProvider = normalizeSmsProvider(provider);
+  if (normalizedProvider === "hero_sms") {
+    setConfigValue(appConfig, "smsService.providers.hero_sms.maxPrice", option.price);
+  } else if (normalizedProvider === "sms_bower") {
+    setConfigValue(appConfig, "smsService.providers.sms_bower.minPrice", option.price);
+    setConfigValue(appConfig, "smsService.providers.sms_bower.maxPrice", option.price);
+  }
+  scheduleConfigSave();
+  renderConfigForm();
+  showConfigMessage(`已选择短信价格：${formatPrice(option.price)}`);
+}
+
+function formatPriceOption(option) {
+  const stock = option.physicalCount
+    ? `${option.count || 0}/${option.physicalCount}`
+    : `${option.count || 0}`;
+  return `${formatPrice(option.price)} · ${stock}个`;
+}
+
+function formatPrice(value) {
+  return Number(value).toFixed(4).replace(/0+$/, "").replace(/\.$/, "");
+}
+
+function formatSmsProviderName(provider) {
+  const normalized = normalizeSmsProvider(provider);
+  if (normalized === "hero_sms") {
+    return "HeroSMS";
+  }
+  if (normalized === "sms_bower") {
+    return "SMSBower";
+  }
+  return provider || "短信服务";
+}
+
+function addFavoriteCountry(field) {
+  const countryId = String(getConfigValue(appConfig, field.path) || "");
+  if (!countryId) {
+    showConfigMessage("请先选择目标国家", true);
+    return;
+  }
+  const favorites = getFavoriteCountryIds(field.provider);
+  if (favorites.includes(countryId)) {
+    return;
+  }
+  setConfigValue(appConfig, `smsService.favoriteCountries.${normalizeSmsProvider(field.provider)}`, [...favorites, countryId]);
+  scheduleConfigSave();
+  renderConfigForm();
+  showConfigMessage("常用国家已添加");
+}
+
+function removeFavoriteCountry(field, countryId) {
+  const favorites = getFavoriteCountryIds(field.provider).filter((item) => item !== String(countryId));
+  setConfigValue(appConfig, `smsService.favoriteCountries.${normalizeSmsProvider(field.provider)}`, favorites);
+  scheduleConfigSave();
+  renderConfigForm();
+  showConfigMessage("常用国家已删除");
+}
+
+function renderFavoriteCountryTags(field) {
+  const favorites = getFavoriteCountryIds(field.provider);
+  if (!favorites.length) {
+    return null;
+  }
+  const wrapper = document.createElement("span");
+  wrapper.className = "favorite-country-tags";
+  for (const countryId of favorites) {
+    const country = field.countries.find((item) => String(item.id) === String(countryId));
+    if (!country) {
+      continue;
+    }
+    wrapper.append(createFavoriteCountryTag(field, country));
+  }
+  if (!wrapper.childElementCount) {
+    return null;
+  }
+  return wrapper;
+}
+
+function createFavoriteCountryTag(field, country) {
+  const tag = document.createElement("button");
+  tag.type = "button";
+  tag.className = "favorite-country-tag";
+  tag.textContent = formatCountryTag(country);
+  tag.title = "点击切换国家，长按或悬停可删除";
+  let longPressTimer = null;
+  let longPressActivated = false;
+
+  tag.addEventListener("click", (event) => {
+    if (longPressActivated) {
+      event.preventDefault();
+      longPressActivated = false;
+      return;
+    }
+    setConfigValue(appConfig, field.path, String(country.id));
+    scheduleConfigSave();
+    renderConfigForm();
+    querySmsPrices(field.provider).catch((error) => {
+      logger.warn("常用国家切换后查询短信价格失败", {
+        provider: field.provider,
+        error: error.message
+      });
+    });
+  });
+  tag.addEventListener("pointerdown", () => {
+    clearTimeout(longPressTimer);
+    longPressActivated = false;
+    longPressTimer = setTimeout(() => {
+      longPressActivated = true;
+      tag.classList.add("show-remove");
+    }, 600);
+  });
+  tag.addEventListener("pointerup", () => clearTimeout(longPressTimer));
+  tag.addEventListener("pointercancel", () => clearTimeout(longPressTimer));
+  tag.addEventListener("pointerleave", () => clearTimeout(longPressTimer));
+
+  const remove = document.createElement("span");
+  remove.className = "favorite-country-remove";
+  remove.textContent = "×";
+  remove.addEventListener("click", (event) => {
+    event.stopPropagation();
+    removeFavoriteCountry(field, country.id);
+  });
+  tag.append(remove);
+  return tag;
+}
+
+function formatCountryTag(country) {
+  const name = country.raw?.chn || country.raw?.eng || country.name || "国家";
+  return `${name} ${country.id}`;
 }
 
 function scheduleConfigSave() {
@@ -1489,6 +1872,25 @@ function numberField(label, path, unit = "", visible = null) {
   return { kind: "field", type: "number", label, path, help: unit, visible };
 }
 
+function balanceActionField(label, help, action, visible = null) {
+  return { kind: "field", type: "balance-action", label, help, action, visible, buttonText: "查询余额" };
+}
+
+function priceField(label, path, provider, role, unit = "", visible = null) {
+  return {
+    kind: "field",
+    type: "number",
+    label,
+    path,
+    help: unit,
+    visible,
+    priceLookup: {
+      provider,
+      role
+    }
+  };
+}
+
 function checkboxField(label, path, visible = null, options = {}) {
   return { kind: "field", type: "checkbox", label, path, visible, rerender: true, ...options };
 }
@@ -1505,8 +1907,8 @@ function dynamicSelectField(label, path, options, help = "", visible = null) {
   return { kind: "field", type: "dynamic-select", label, path, options, help, visible, rerender: true };
 }
 
-function countryField(label, path, countries, visible = null) {
-  return { kind: "field", type: "country", label, path, countries, visible };
+function countryField(label, path, countries, provider, visible = null) {
+  return { kind: "field", type: "country", label, path, countries, provider: normalizeSmsProvider(provider), visible };
 }
 
 function actionField(label, help, action, visible = null) {

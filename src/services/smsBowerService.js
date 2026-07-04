@@ -34,6 +34,20 @@ export class SmsBowerService {
     return this._requestNewMobileNumber();
   }
 
+  async getPriceOptions(options = {}) {
+    const payload = await this._requestJson({
+      api_key: this.config.apiKey,
+      action: "getPricesV3",
+      service: this.constructor.serviceCode,
+      country: this.config.countryId
+    }, options);
+    return normalizeBowerPrices(payload, {
+      provider: this.constructor.provider,
+      serviceCode: this.constructor.serviceCode,
+      countryId: this.config.countryId
+    });
+  }
+
   async getLatestVerificationCode(mobileNumber, sentAfter, options = {}) {
     const activationId = requireAttribute(mobileNumber, "activationId");
     const timeoutMs = Number(this.config.verificationCodeWaitTimeout || 60) * 1000;
@@ -252,6 +266,45 @@ function mobileFromRecord(record, extraAttributes) {
       ...extraAttributes
     }
   };
+}
+
+function normalizeBowerPrices(payload, base) {
+  const options = [];
+  walkPricePayload(payload, (providerId, value) => {
+    const price = Number(value?.price);
+    if (!Number.isFinite(price)) {
+      return;
+    }
+    options.push({
+      ...base,
+      providerId: String(value?.provider_id || providerId || ""),
+      price,
+      count: Number(value?.count || 0),
+      raw: value
+    });
+  });
+  return sortPriceOptions(options);
+}
+
+function walkPricePayload(value, onPrice, key = "") {
+  if (!value || typeof value !== "object") {
+    return;
+  }
+  if (Object.hasOwn(value, "price") && Object.hasOwn(value, "count")) {
+    onPrice(key, value);
+    return;
+  }
+  for (const [childKey, childValue] of Object.entries(value)) {
+    walkPricePayload(childValue, onPrice, childKey);
+  }
+}
+
+function sortPriceOptions(options) {
+  return options.sort((left, right) => (
+    left.price - right.price
+    || right.count - left.count
+    || String(left.providerId).localeCompare(String(right.providerId))
+  ));
 }
 
 function requireAttribute(mobileNumber, name) {

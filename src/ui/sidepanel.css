@@ -571,6 +571,14 @@ dd {
   border-bottom: 1px solid var(--row-line);
 }
 
+.config-field.has-subcontrol {
+  align-items: start;
+}
+
+.config-field.has-subcontrol .config-label {
+  padding-top: 10px;
+}
+
 .config-field:last-child {
   border-bottom: 0;
 }
@@ -612,8 +620,117 @@ dd {
 }
 
 .country-picker {
-  display: block;
+  display: grid;
+  gap: 7px;
   width: 100%;
+}
+
+.country-picker-row,
+.price-control-row,
+.balance-action-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 7px;
+  align-items: center;
+}
+
+.balance-action-value {
+  min-width: 0;
+  color: var(--muted);
+  font: 12px/1.3 ui-monospace, "SF Mono", Menlo, Monaco, Consolas, monospace;
+  overflow-wrap: anywhere;
+}
+
+.balance-action-value.error {
+  color: var(--danger);
+}
+
+.country-favorite-button,
+.price-query-button {
+  min-width: 34px;
+  min-height: 34px;
+  padding: 0 9px;
+  font-size: 11px;
+  color: var(--muted);
+  background: var(--panel-soft);
+  white-space: nowrap;
+}
+
+.country-favorite-button {
+  width: 34px;
+  padding: 0;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.price-control {
+  display: grid;
+  gap: 7px;
+  width: 100%;
+}
+
+.price-options,
+.favorite-country-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 22px;
+  color: var(--soft);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.price-options.error {
+  color: var(--danger);
+}
+
+.price-option,
+.favorite-country-tag {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  border-radius: 999px;
+  padding: 0 8px;
+  font-size: 11px;
+  color: var(--muted);
+  background: var(--panel-soft);
+  border-color: var(--line);
+  box-shadow: none;
+}
+
+.price-option:hover,
+.favorite-country-tag:hover {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--line));
+}
+
+.favorite-country-tag {
+  padding-right: 8px;
+}
+
+.favorite-country-remove {
+  position: absolute;
+  top: -7px;
+  right: -7px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 17px;
+  height: 17px;
+  border: 1px solid color-mix(in srgb, var(--danger) 48%, var(--line));
+  border-radius: 50%;
+  background: var(--panel);
+  color: var(--danger);
+  font-size: 12px;
+  line-height: 1;
+}
+
+.favorite-country-tag:hover .favorite-country-remove,
+.favorite-country-tag:focus .favorite-country-remove,
+.favorite-country-tag.show-remove .favorite-country-remove {
+  display: inline-flex;
 }
 
 .radio-group {

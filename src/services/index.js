@@ -10,7 +10,7 @@ import { SmsBowerService } from "./smsBowerService.js";
 export function createServices(config) {
   const httpClient = new HttpClient(config.httpService);
   const activationStore = new SmsActivationStore();
-  const smsProvider = config.smsService.provider;
+  const smsProvider = normalizeSmsProvider(config.smsService.provider);
   const smsConfig = smsProvider ? config.smsService.providers[smsProvider] : null;
   const activationStoreConfig = buildActivationStoreConfig(config);
   const accountManagementService = new CpaAccountService(

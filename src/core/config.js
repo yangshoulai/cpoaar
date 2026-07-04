@@ -58,6 +58,10 @@ export const DEFAULT_CONFIG = Object.freeze({
   },
   smsService: {
     provider: "hero_sms",
+    favoriteCountries: {
+      hero_sms: [],
+      sms_bower: []
+    },
     providers: {
       hero_sms: {
         baseUrl: "https://hero-sms.com/stubs/handler_api.php",
@@ -169,6 +173,15 @@ function migrateConfig(config) {
     }
     delete migrated.smsService.activationStore;
   }
+  migrated.smsService = migrated.smsService || {};
+  if (migrated.smsService.provider === "smsbower") {
+    migrated.smsService.provider = "sms_bower";
+  }
+  migrated.smsService.favoriteCountries = {
+    hero_sms: [],
+    sms_bower: [],
+    ...(migrated.smsService.favoriteCountries || {})
+  };
   if (Object.hasOwn(migrated.register || {}, "reuseLocalActivation") && !Object.hasOwn(migrated.register, "reusePhoneNumber")) {
     migrated.register.reusePhoneNumber = migrated.register.reuseLocalActivation;
   }
