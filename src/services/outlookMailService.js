@@ -56,6 +56,37 @@ export class OutlookMailEmailService {
     return payload.groups;
   }
 
+  async findOutlookAccountByEmail(emailAddress) {
+    await this.initialize();
+    const normalizedEmail = normalizeEmailAddress(emailAddress);
+    if (!normalizedEmail) {
+      return null;
+    }
+    const searchPayload = await this._request("/api/accounts/search", {
+      query: { q: normalizedEmail }
+    });
+    if (!searchPayload?.success || !Array.isArray(searchPayload.accounts)) {
+      throw new Error(`Outlook 邮箱账号搜索响应异常: ${JSON.stringify(searchPayload)}`);
+    }
+    const matched = searchPayload.accounts.find((account) => (
+      normalizeEmailAddress(account.email) === normalizedEmail
+    )) || searchPayload.accounts[0];
+    if (!matched?.id) {
+      logger.warn("Outlook 邮箱账号搜索无结果", { email: normalizedEmail });
+      return null;
+    }
+    const detailPayload = await this._request(`/api/accounts/${encodeURIComponent(matched.id)}`);
+    const account = detailPayload?.account || matched;
+    if (!account?.email) {
+      throw new Error(`Outlook 邮箱账号详情缺少 email: ${JSON.stringify(detailPayload)}`);
+    }
+    logger.info("Outlook 邮箱账号搜索成功", {
+      email: account.email,
+      accountId: account.id
+    });
+    return buildOutlookEmailAccount(account);
+  }
+
   async searchFirstEmail(emailAccount, sentAfter, options = {}) {
     await this.initialize();
     if (emailAccount.attributes?.mode === "temp") {
@@ -69,8 +100,9 @@ export class OutlookMailEmailService {
       return;
     }
     await this.initialize();
-    const account = emailAccount.attributes.account || {};
-    const accountId = account.id || emailAccount.attributes.accountId;
+    const resolved = await this._resolveOutlookAccount(emailAccount);
+    const account = resolved.account;
+    const accountId = resolved.accountId;
     if (!accountId) {
       logger.warn("Outlook 邮箱缺少 accountId，跳过分组移动");
       return;
@@ -107,8 +139,9 @@ export class OutlookMailEmailService {
       return;
     }
 
-    const account = emailAccount?.attributes?.account || emailRecord?.outlookAccount || {};
-    const accountId = account.id || emailAccount?.attributes?.accountId || emailRecord?.outlookAccountId || "";
+    const resolved = await this._resolveOutlookAccount(emailAccount, emailRecord);
+    const account = resolved.account;
+    const accountId = resolved.accountId;
     if (!accountId) {
       throw new Error("Outlook 邮箱删除回调失败：缺少 accountId，无法移动到已删除分组");
     }
@@ -130,6 +163,41 @@ export class OutlookMailEmailService {
         group_id: this.config.outlook.deletedGroupId
       }
     });
+  }
+
+  async _resolveOutlookAccount(emailAccount, emailRecord = {}) {
+    const existingAccount = emailAccount?.attributes?.account || emailRecord?.outlookAccount || {};
+    const existingAccountId = existingAccount.id
+      || emailAccount?.attributes?.accountId
+      || emailRecord?.outlookAccountId
+      || "";
+    if (existingAccountId) {
+      return {
+        account: existingAccount,
+        accountId: String(existingAccountId)
+      };
+    }
+
+    const emailAddress = emailRecord?.emailAddress || emailAccount?.emailAddress || existingAccount.email || "";
+    const resolvedEmailAccount = await this.findOutlookAccountByEmail(emailAddress);
+    if (!resolvedEmailAccount) {
+      return {
+        account: existingAccount,
+        accountId: ""
+      };
+    }
+    if (emailAccount?.attributes) {
+      emailAccount.attributes.accountId = resolvedEmailAccount.attributes.accountId;
+      emailAccount.attributes.account = resolvedEmailAccount.attributes.account;
+    }
+    if (emailRecord) {
+      emailRecord.outlookAccountId = resolvedEmailAccount.attributes.accountId;
+      emailRecord.outlookAccount = resolvedEmailAccount.attributes.account;
+    }
+    return {
+      account: resolvedEmailAccount.attributes.account,
+      accountId: resolvedEmailAccount.attributes.accountId
+    };
   }
 
   async _generateTempEmail() {
@@ -174,14 +242,7 @@ export class OutlookMailEmailService {
       email: account.email,
       accountId: account.id
     });
-    return {
-      emailAddress: account.email,
-      attributes: {
-        mode: "outlook",
-        accountId: String(account.id),
-        account
-      }
-    };
+    return buildOutlookEmailAccount(account);
   }
 
   async _searchTempEmail(emailAccount, sentAfter, options = {}) {
@@ -244,6 +305,21 @@ function isOpenAiMessage(message) {
   const subject = String(message.subject || "");
   return sender.includes(OPENAI_SENDER_KEYWORD)
     && SUBJECT_KEYWORDS.some((keyword) => subject.includes(keyword));
+}
+
+function buildOutlookEmailAccount(account) {
+  return {
+    emailAddress: account.email,
+    attributes: {
+      mode: "outlook",
+      accountId: String(account.id),
+      account
+    }
+  };
+}
+
+function normalizeEmailAddress(value) {
+  return String(value || "").trim().toLowerCase();
 }
 
 function buildEmailMessage(emailAddress, rawMessage) {

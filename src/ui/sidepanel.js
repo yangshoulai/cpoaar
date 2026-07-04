@@ -46,7 +46,7 @@ const CONFIG_GROUPS = [
   ["httpService", "HTTP"],
   ["emailService", "邮箱"],
   ["smsService", "短信"],
-  ["accountExportService", "导出"],
+  ["accountManagementService", "账号服务"],
   ["register", "注册器"],
   ["reauthorize", "重新授权"]
 ];
@@ -100,11 +100,11 @@ const CONFIG_SCHEMAS = {
     numberField("验证码超时", "smsService.providers.sms_bower.verificationCodeWaitTimeout", "秒", () => getConfigValue(appConfig, "smsService.provider") === "sms_bower" || getConfigValue(appConfig, "smsService.provider") === "smsbower"),
     numberField("激活有效期", "smsService.providers.sms_bower.activationValidSeconds", "秒", () => getConfigValue(appConfig, "smsService.provider") === "sms_bower" || getConfigValue(appConfig, "smsService.provider") === "smsbower")
   ],
-  accountExportService: [
-    section("账号导出"),
-    selectField("服务提供者", "accountExportService.provider", [["cpa", "CPA"]]),
-    textField("接口地址", "accountExportService.providers.cpa.baseUrl"),
-    textField("管理密钥", "accountExportService.providers.cpa.secretKey")
+  accountManagementService: [
+    section("账号服务"),
+    selectField("服务提供者", "accountManagementService.provider", [["cpa", "CPA"]]),
+    textField("接口地址", "accountManagementService.providers.cpa.baseUrl"),
+    textField("管理密钥", "accountManagementService.providers.cpa.secretKey")
   ],
   register: [
     section("注册流程"),
@@ -155,6 +155,7 @@ const RESULT_STATUS_LABELS = {
   codex_oauth_consent_ready: "Consent 已就绪",
   reauthorize_account_deactivated_ready: "账号已停用",
   reauthorize_account_deactivated: "账号已停用",
+  reauthorize_delete_account_ready: "准备删除账号",
   reauthorize_account_deleted: "账号已删除",
   reauthorize_account_delete_failed: "账号删除失败",
   reauthorize_phone_challenge_stopped: "手机号二验已终止",
@@ -357,9 +358,10 @@ async function startManualReauthorize() {
     return;
   }
 
-  await runReauthorizeFlow(buildManualReauthorizeState(emailAddress), {
+  const initialState = await buildManualReauthorizeState(emailAddress);
+  await runReauthorizeFlow(initialState, {
     email: emailAddress,
-    emailMode: resolveManualEmailMode(),
+    emailMode: initialState.historyRecord?.emailMode || resolveManualEmailMode(),
     source: "manual"
   });
 }
@@ -729,12 +731,15 @@ async function runReauthorizeFlow(initialState, logData = {}) {
   }
 }
 
-function buildManualReauthorizeState(emailAddress) {
-  const emailAccount = buildManualEmailAccount(emailAddress);
+async function buildManualReauthorizeState(emailAddress) {
+  const emailAccount = await buildManualEmailAccount(emailAddress);
+  const normalizedEmailAddress = emailAccount.emailAddress || emailAddress;
+  const historyRecord = buildManualHistoryRecord(normalizedEmailAddress, emailAccount);
   return {
+    historyRecord,
     emailAccount,
     account: {
-      emailAddress,
+      emailAddress: normalizedEmailAddress,
       mobile: "",
       name: "",
       age: "",
@@ -761,13 +766,48 @@ function buildReauthorizeState(record) {
   };
 }
 
-function buildManualEmailAccount(emailAddress) {
+async function buildManualEmailAccount(emailAddress) {
+  const mode = resolveManualEmailMode();
+  if (mode === "outlook") {
+    try {
+      const resolved = await createServices(appConfig).emailService.findOutlookAccountByEmail(emailAddress);
+      if (resolved) {
+        return {
+          ...resolved,
+          attributes: {
+            ...(resolved.attributes || {}),
+            manual: true
+          }
+        };
+      }
+    } catch (error) {
+      logger.warn("手动授权邮箱账号详情查询失败，继续使用邮箱地址", {
+        email: emailAddress,
+        error: error.message
+      });
+    }
+  }
   return {
     emailAddress,
     attributes: {
-      mode: resolveManualEmailMode(),
+      mode,
       manual: true
     }
+  };
+}
+
+function buildManualHistoryRecord(emailAddress, emailAccount) {
+  return {
+    emailAddress,
+    emailMode: emailAccount.attributes?.mode === "temp" ? "temp" : "outlook_pool",
+    emailAccount,
+    outlookAccountId: emailAccount.attributes?.accountId || "",
+    outlookAccount: emailAccount.attributes?.account || null,
+    mobile: "",
+    name: "",
+    age: "",
+    birthDate: "",
+    password: ""
   };
 }
 

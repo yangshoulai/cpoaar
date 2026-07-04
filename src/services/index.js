@@ -2,7 +2,7 @@ import { HttpClient } from "../core/http.js";
 import { getProviderConfig } from "../core/config.js";
 import { createAccount } from "../core/account.js";
 import { SmsActivationStore } from "./smsActivationStore.js";
-import { CpaAccountExportService } from "./cpaAccountExportService.js";
+import { CpaAccountService } from "./cpaAccountService.js";
 import { OutlookMailEmailService } from "./outlookMailService.js";
 import { HeroSmsService } from "./heroSmsService.js";
 import { SmsBowerService } from "./smsBowerService.js";
@@ -13,6 +13,10 @@ export function createServices(config) {
   const smsProvider = config.smsService.provider;
   const smsConfig = smsProvider ? config.smsService.providers[smsProvider] : null;
   const activationStoreConfig = buildActivationStoreConfig(config);
+  const accountManagementService = new CpaAccountService(
+    getProviderConfig(config, "accountManagementService"),
+    httpClient
+  );
 
   return {
     config,
@@ -25,10 +29,8 @@ export function createServices(config) {
       getProviderConfig(config, "emailService"),
       httpClient
     ),
-    accountExportService: new CpaAccountExportService(
-      getProviderConfig(config, "accountExportService"),
-      httpClient
-    ),
+    accountManagementService,
+    accountExportService: accountManagementService,
     smsService: smsProvider
       ? createSmsService(smsProvider, smsConfig, httpClient, activationStore, activationStoreConfig)
       : null

@@ -3,7 +3,7 @@ import { createLogger } from "../core/logger.js";
 
 const logger = createLogger("cpa");
 
-export class CpaAccountExportService {
+export class CpaAccountService {
   constructor(config, httpClient) {
     this.config = config;
     this.http = httpClient;
@@ -45,9 +45,43 @@ export class CpaAccountExportService {
     };
   }
 
+  async deleteAccount(record) {
+    const emailAddress = record?.emailAddress || record?.emailAccount?.emailAddress || "";
+    if (!emailAddress) {
+      throw new Error("CPA 账号删除失败：缺少邮箱地址");
+    }
+    const fileName = buildCodexAuthFileName(emailAddress);
+    const url = joinUrl(this.config.baseUrl, "auth-files");
+    logger.info("删除 CPA Codex 认证文件", {
+      url,
+      email: emailAddress,
+      fileName
+    });
+    const payload = await this.http.request(url, {
+      method: "DELETE",
+      query: { name: fileName },
+      headers: this._headers(),
+      credentials: "omit"
+    });
+    const success = payload == null
+      || payload?.success === true
+      || payload?.status === "ok";
+    return {
+      success,
+      status: payload?.status || (success ? "ok" : "unknown"),
+      error: payload?.error || payload?.message || "",
+      fileName,
+      attributes: payload || {}
+    };
+  }
+
   _headers() {
     return {
       "X-Management-Key": this.config.secretKey || ""
     };
   }
+}
+
+function buildCodexAuthFileName(emailAddress) {
+  return `codex-${String(emailAddress || "").trim()}-free.json`;
 }

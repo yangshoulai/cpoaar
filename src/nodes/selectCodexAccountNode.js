@@ -1,7 +1,12 @@
 import { RegisterNode, NodeResult } from "../core/flow.js";
 import { waitForAnyCondition } from "../core/browser.js";
 import { createLogger } from "../core/logger.js";
-import { findAccountDeactivatedMessage, hasPhoneChallenge } from "./reauthorizeHelpers.js";
+import {
+  clickOneTimeCodeLoginButton,
+  findAccountDeactivatedMessage,
+  findOneTimeCodeLoginButton,
+  hasPhoneChallenge
+} from "./reauthorizeHelpers.js";
 
 const logger = createLogger("node.select-codex");
 
@@ -26,7 +31,7 @@ export class SelectCodexAccountNode extends RegisterNode {
 
     let oauth;
     try {
-      oauth = await ctx.services.accountExportService.getOauthUrl();
+      oauth = await ctx.services.accountManagementService.getOauthUrl();
     } catch (error) {
       return NodeResult.fail("codex_oauth_request_failed", formatServiceError(error));
     }
@@ -41,6 +46,10 @@ export class SelectCodexAccountNode extends RegisterNode {
       {
         name: "email_input",
         check: () => ctx.tabs.query("input[name='email']")
+      },
+      {
+        name: "one_time_code_login",
+        check: () => findOneTimeCodeLoginButton(ctx)
       },
       {
         name: "needs_phone",
@@ -81,10 +90,21 @@ export class SelectCodexAccountNode extends RegisterNode {
         currentUrl: await ctx.tabs.getCurrentUrl()
       });
     }
+    if (accountResult.name === "one_time_code_login") {
+      return switchToOneTimeCodeLogin(ctx);
+    }
 
     logger.info("点击 Codex OAuth 账号按钮", { email: account.emailAddress });
     await ctx.tabs.clickAccountButton(account.emailAddress);
     const nextResult = await waitForAnyCondition([
+      {
+        name: "email_verification_ready",
+        check: () => ctx.tabs.query("input[name='code']")
+      },
+      {
+        name: "one_time_code_login",
+        check: () => findOneTimeCodeLoginButton(ctx)
+      },
       {
         name: "needs_phone",
         check: async () => await hasPhoneChallenge(ctx) ? "phone_challenge" : null
@@ -104,7 +124,13 @@ export class SelectCodexAccountNode extends RegisterNode {
 
     const currentUrl = await ctx.tabs.getCurrentUrl();
     if (!nextResult.matched) {
-      return NodeResult.fail("codex_oauth_unexpected_url", `选择账号后未进入手机号或 consent 页面: ${currentUrl}`, { currentUrl });
+      return NodeResult.fail("codex_oauth_unexpected_url", `选择账号后未进入邮箱验证码、手机号或 consent 页面: ${currentUrl}`, { currentUrl });
+    }
+    if (nextResult.name === "email_verification_ready") {
+      return NodeResult.ok(SelectCodexAccountNode.statuses.emailVerificationReady, { currentUrl });
+    }
+    if (nextResult.name === "one_time_code_login") {
+      return switchToOneTimeCodeLogin(ctx);
     }
     if (nextResult.name === "account_deactivated") {
       return buildAccountDeactivatedResult(ctx, { currentUrl });
@@ -116,6 +142,22 @@ export class SelectCodexAccountNode extends RegisterNode {
       { currentUrl }
     );
   }
+}
+
+async function switchToOneTimeCodeLogin(ctx) {
+  const clicked = await clickOneTimeCodeLoginButton(ctx);
+  const currentUrl = await ctx.tabs.getCurrentUrl();
+  if (!clicked) {
+    return NodeResult.fail("codex_oauth_unexpected_url", `未能点击一次性验证码登录按钮: ${currentUrl}`, { currentUrl });
+  }
+  ctx.state.emailSubmittedAt = new Date().toISOString();
+  logger.info("OAuth 密码页切换为一次性验证码登录", {
+    currentUrl
+  });
+  return NodeResult.ok(SelectCodexAccountNode.statuses.emailVerificationReady, {
+    emailSubmittedAt: ctx.state.emailSubmittedAt,
+    currentUrl
+  });
 }
 
 function formatServiceError(error) {

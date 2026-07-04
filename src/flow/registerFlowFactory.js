@@ -11,6 +11,7 @@ import { WaitSmsVerificationCodeNode } from "../nodes/waitSmsVerificationCodeNod
 import { SubmitCodexConsentNode } from "../nodes/submitCodexConsentNode.js";
 import { ReauthorizePhoneChallengeNode } from "../nodes/reauthorizePhoneChallengeNode.js";
 import { ReauthorizeAccountDeletedNode } from "../nodes/reauthorizeAccountDeletedNode.js";
+import { ReauthorizeDeleteAccountNode } from "../nodes/reauthorizeDeleteAccountNode.js";
 
 export function buildRegisterFlow(mode = "email_register") {
   if (mode === "reauthorize") {
@@ -86,6 +87,7 @@ function buildReauthorizeFlow() {
     new WaitEmailVerificationCodeNode(),
     new ReauthorizePhoneChallengeNode(),
     new ReauthorizeAccountDeletedNode(),
+    new ReauthorizeDeleteAccountNode(),
     new SubmitCodexConsentNode()
   ];
   return new RegisterFlow({
@@ -108,8 +110,12 @@ function buildReauthorizeFlow() {
         { status: WaitEmailVerificationCodeNode.statuses.consent, target: SubmitCodexConsentNode.name }
       ],
       [ReauthorizePhoneChallengeNode.name]: [
+        { status: ReauthorizePhoneChallengeNode.statuses.deleteAccount, target: ReauthorizeDeleteAccountNode.name },
         { status: ReauthorizePhoneChallengeNode.statuses.accountDeleted, target: ReauthorizeAccountDeletedNode.name },
         { status: ReauthorizePhoneChallengeNode.statuses.consent, target: SubmitCodexConsentNode.name }
+      ],
+      [ReauthorizeAccountDeletedNode.name]: [
+        { status: ReauthorizeAccountDeletedNode.statuses.deleteAccount, target: ReauthorizeDeleteAccountNode.name }
       ]
     }
   });
@@ -123,6 +129,7 @@ export function getNodeOrder(mode = "email_register") {
       WaitEmailVerificationCodeNode.name,
       ReauthorizePhoneChallengeNode.name,
       ReauthorizeAccountDeletedNode.name,
+      ReauthorizeDeleteAccountNode.name,
       SubmitCodexConsentNode.name
     ];
   }
@@ -193,6 +200,10 @@ const REAUTHORIZE_MANUAL_RETRY_POLICIES = Object.freeze({
   [ReauthorizeAccountDeletedNode.name]: Object.freeze({
     retryable: false,
     message: "账号停用处理节点不支持重试"
+  }),
+  [ReauthorizeDeleteAccountNode.name]: Object.freeze({
+    retryable: false,
+    message: "删除账号节点不支持重试"
   }),
   [SubmitCodexConsentNode.name]: retryFromNode(SelectCodexAccountNode.name)
 });

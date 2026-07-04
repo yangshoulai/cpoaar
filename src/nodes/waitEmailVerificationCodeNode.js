@@ -1,7 +1,12 @@
 import { RegisterNode, NodeResult, buildFlowStoppedResult, isFlowStopped } from "../core/flow.js";
 import { waitForAnyCondition, sleep } from "../core/browser.js";
 import { createLogger } from "../core/logger.js";
-import { findAccountDeactivatedMessage, hasPhoneChallenge } from "./reauthorizeHelpers.js";
+import {
+  clickOneTimeCodeLoginButton,
+  findAccountDeactivatedMessage,
+  findOneTimeCodeLoginButton,
+  hasPhoneChallenge
+} from "./reauthorizeHelpers.js";
 
 const logger = createLogger("node.email-code");
 
@@ -31,6 +36,10 @@ export class WaitEmailVerificationCodeNode extends RegisterNode {
         check: () => ctx.tabs.query("input[name='code']")
       },
       {
+        name: "one_time_code_login",
+        check: () => findOneTimeCodeLoginButton(ctx)
+      },
+      {
         name: "account_deactivated",
         check: () => findAccountDeactivatedMessage(ctx)
       },
@@ -57,6 +66,18 @@ export class WaitEmailVerificationCodeNode extends RegisterNode {
     if (readyResult.name === "try_again") {
       await ctx.tabs.click("button[data-dd-action-name='Try again']");
       return NodeResult.ok(WaitEmailVerificationCodeNode.statuses.retryCurrent);
+    }
+    if (readyResult.name === "one_time_code_login") {
+      const clicked = await clickOneTimeCodeLoginButton(ctx);
+      if (!clicked) {
+        return NodeResult.fail("email_verification_failed", "未能点击一次性验证码登录按钮");
+      }
+      ctx.state.emailSubmittedAt = new Date().toISOString();
+      logger.info("邮箱验证码节点切换为一次性验证码登录");
+      return NodeResult.ok(WaitEmailVerificationCodeNode.statuses.retryCurrent, {
+        emailSubmittedAt: ctx.state.emailSubmittedAt,
+        currentUrl: await ctx.tabs.getCurrentUrl()
+      });
     }
     if (readyResult.name === "account_deactivated") {
       return buildAccountDeactivatedResult(ctx);

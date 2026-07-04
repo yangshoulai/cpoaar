@@ -36,7 +36,45 @@ export async function resolveVerificationCodeInputSelector(ctx) {
   return "";
 }
 
+export async function findOneTimeCodeLoginButton(ctx) {
+  return ctx.tabs.execute(runOneTimeCodeLoginButtonAction, ["find"]);
+}
+
+export async function clickOneTimeCodeLoginButton(ctx) {
+  return ctx.tabs.execute(runOneTimeCodeLoginButtonAction, ["click"]);
+}
+
 export function promptRequired(message) {
   const value = window.prompt(message);
   return String(value || "").trim();
+}
+
+function runOneTimeCodeLoginButtonAction(action) {
+  const passwordInput = document.querySelector("input[name='current-password']");
+  if (!passwordInput) {
+    return null;
+  }
+  const candidates = Array.from(document.querySelectorAll('button[name="intent"]'))
+    .filter((button) => !button.disabled && button.getAttribute("aria-disabled") !== "true");
+  const keywords = ["一次性", "验证码", "one-time", "one time", "code", "email"];
+  const button = candidates.find((item) => {
+    const text = `${item.textContent || ""} ${item.value || ""}`.toLowerCase();
+    return keywords.some((keyword) => text.includes(keyword));
+  }) || candidates[0];
+  if (!button) {
+    return null;
+  }
+  const data = {
+    tagName: button.tagName,
+    text: button.textContent.trim(),
+    value: button.value || "",
+    id: button.id || "",
+    name: button.getAttribute("name") || "",
+    ariaLabel: button.getAttribute("aria-label") || ""
+  };
+  if (action === "click") {
+    button.scrollIntoView({ block: "center", inline: "center" });
+    button.click();
+  }
+  return data;
 }

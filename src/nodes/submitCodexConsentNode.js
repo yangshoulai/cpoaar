@@ -40,7 +40,7 @@ export class SubmitCodexConsentNode extends RegisterNode {
     }
 
     const redirectUrl = redirectResult.value;
-    const submitResult = await ctx.services.accountExportService.submitRedirectUrl(redirectUrl);
+    const submitResult = await ctx.services.accountManagementService.submitRedirectUrl(redirectUrl);
     if (!submitResult.success) {
       return NodeResult.fail("account_export_failed", submitResult.error || `账号导出失败: ${submitResult.status}`, {
         codexOauthRedirectUrl: redirectUrl,

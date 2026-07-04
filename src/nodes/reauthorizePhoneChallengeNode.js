@@ -1,7 +1,7 @@
 import { RegisterNode, NodeResult } from "../core/flow.js";
 import { waitForAnyCondition } from "../core/browser.js";
 import { createLogger } from "../core/logger.js";
-import { deleteRegisteredAccount } from "../services/accountDeletionService.js";
+import { ReauthorizeDeleteAccountNode } from "./reauthorizeDeleteAccountNode.js";
 import {
   findAccountDeactivatedMessage,
   promptRequired,
@@ -15,7 +15,8 @@ export class ReauthorizePhoneChallengeNode extends RegisterNode {
   static name = "reauthorize_phone_challenge";
   static statuses = {
     consent: "reauthorize_phone_consent_ready",
-    accountDeleted: "reauthorize_account_deactivated_ready"
+    accountDeleted: "reauthorize_account_deactivated_ready",
+    deleteAccount: ReauthorizeDeleteAccountNode.statuses.ready
   };
 
   constructor() {
@@ -25,7 +26,7 @@ export class ReauthorizePhoneChallengeNode extends RegisterNode {
   async execute(ctx) {
     const action = ctx.config.reauthorize?.phoneChallengeAction || "stop";
     if (action === "delete_account") {
-      return this._deleteAccountAndStop(ctx, "重新授权出现手机号二验");
+      return this._requestDeleteAccount(ctx, "重新授权出现手机号二验");
     }
     if (action === "stop") {
       return NodeResult.fail("reauthorize_phone_challenge_stopped", "重新授权出现手机号二验，配置为终止流程");
@@ -90,18 +91,17 @@ export class ReauthorizePhoneChallengeNode extends RegisterNode {
     return NodeResult.ok(ReauthorizePhoneChallengeNode.statuses.consent, data);
   }
 
-  async _deleteAccountAndStop(ctx, reason) {
+  async _requestDeleteAccount(ctx, reason) {
     const record = ctx.state.historyRecord;
     if (!record) {
-      return NodeResult.fail("reauthorize_account_delete_failed", "上下文缺少历史记录，无法删除账号");
+      return NodeResult.fail("reauthorize_account_delete_failed", "上下文缺少账号记录，无法删除账号");
     }
     logger.warn("重新授权手机号二验，按配置删除账号", {
       email: record.emailAddress
     });
-    await deleteRegisteredAccount(ctx.config, record, {
-      reason
+    return NodeResult.ok(ReauthorizePhoneChallengeNode.statuses.deleteAccount, {
+      reauthorizeDeleteReason: reason
     });
-    return NodeResult.fail("reauthorize_account_deleted", "已删除账号并终止流程");
   }
 }
 

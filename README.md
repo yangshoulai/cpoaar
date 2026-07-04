@@ -12,7 +12,7 @@
 - 支持从头开始、继续执行、停止、手动重试当前节点。
 - 注册流程包含“启动初始化”节点，会清理 `chatgpt.com`、`openai.com`、`auth.openai.com` 的 Cookie，并关闭相关标签页。
 - 使用 Chrome 原生 Tab 和 Scripting API 操作页面 DOM。
-- 支持 OutlookMail 邮箱服务、CPA 账号导出服务、HeroSMS、SMSBower。
+- 支持 OutlookMail 邮箱服务、CPA 账号服务、HeroSMS、SMSBower。
 - Outlook 邮箱池分组支持从 OutlookMail 服务刷新后下拉选择。
 - HeroSMS 和 SMSBower 国家列表已内置，国家选择支持过滤。
 - 使用 IndexedDB 保存短信激活记录，用于本地手机号复用。

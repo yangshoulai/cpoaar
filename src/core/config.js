@@ -26,7 +26,7 @@ export const DEFAULT_CONFIG = Object.freeze({
     deleteAccountOnDeactivated: false,
     phoneChallengeAction: "stop"
   },
-  accountExportService: {
+  accountManagementService: {
     provider: "cpa",
     providers: {
       cpa: {
@@ -111,7 +111,7 @@ export function validateConfig(config) {
   const errors = [];
   const normalized = normalizeConfig(config);
   const emailConfig = normalized.emailService.providers.outlook_mail;
-  const exportConfig = normalized.accountExportService.providers.cpa;
+  const accountConfig = normalized.accountManagementService.providers.cpa;
 
   if (normalized.accountService.randomPassword === false && !normalized.accountService.specifiedPassword) {
     errors.push("关闭随机密码时，固定密码不能为空");
@@ -122,10 +122,10 @@ export function validateConfig(config) {
   if (!emailConfig.adminPassword) {
     errors.push("OutlookMail adminPassword 不能为空");
   }
-  if (!exportConfig.baseUrl) {
+  if (!accountConfig.baseUrl) {
     errors.push("CPA baseUrl 不能为空");
   }
-  if (!exportConfig.secretKey) {
+  if (!accountConfig.secretKey) {
     errors.push("CPA secretKey 不能为空");
   }
   if (normalized.register.mode !== "reauthorize" && normalized.smsService.provider) {
@@ -146,6 +146,11 @@ function isPlainObject(value) {
 
 function migrateConfig(config) {
   const migrated = deepClone(config);
+  if (migrated.accountExportService && !migrated.accountManagementService) {
+    migrated.accountManagementService = migrated.accountExportService;
+  }
+  delete migrated.accountExportService;
+
   if (
     migrated.accountService
     && !Object.hasOwn(migrated.accountService, "randomPassword")
