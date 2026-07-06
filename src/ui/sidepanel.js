@@ -83,7 +83,8 @@ const CONFIG_SCHEMAS = {
     selectField("服务提供者", "smsService.provider", [
       ["", "不启用"],
       ["hero_sms", "HeroSMS"],
-      ["sms_bower", "SMSBower"]
+      ["sms_bower", "SMSBower"],
+      ["manual", "手动模式"]
     ]),
     section("HeroSMS", () => getConfigValue(appConfig, "smsService.provider") === "hero_sms"),
     textField("接口地址", "smsService.providers.hero_sms.baseUrl", "", () => getConfigValue(appConfig, "smsService.provider") === "hero_sms"),
@@ -99,7 +100,9 @@ const CONFIG_SCHEMAS = {
     numberField("最低价格", "smsService.providers.sms_bower.minPrice", "", () => getConfigValue(appConfig, "smsService.provider") === "sms_bower" || getConfigValue(appConfig, "smsService.provider") === "smsbower"),
     priceField("最高价格", "smsService.providers.sms_bower.maxPrice", "sms_bower", "max", "", () => getConfigValue(appConfig, "smsService.provider") === "sms_bower" || getConfigValue(appConfig, "smsService.provider") === "smsbower"),
     numberField("验证码超时", "smsService.providers.sms_bower.verificationCodeWaitTimeout", "秒", () => getConfigValue(appConfig, "smsService.provider") === "sms_bower" || getConfigValue(appConfig, "smsService.provider") === "smsbower"),
-    numberField("激活有效期", "smsService.providers.sms_bower.activationValidSeconds", "秒", () => getConfigValue(appConfig, "smsService.provider") === "sms_bower" || getConfigValue(appConfig, "smsService.provider") === "smsbower")
+    numberField("激活有效期", "smsService.providers.sms_bower.activationValidSeconds", "秒", () => getConfigValue(appConfig, "smsService.provider") === "sms_bower" || getConfigValue(appConfig, "smsService.provider") === "smsbower"),
+    section("手动模式", () => getConfigValue(appConfig, "smsService.provider") === "manual"),
+    textField("手机号", "smsService.providers.manual.mobileNumber", "以 + 开头；不填 + 会自动添加。", () => getConfigValue(appConfig, "smsService.provider") === "manual")
   ],
   accountManagementService: [
     section("账号服务"),
@@ -849,6 +852,9 @@ function formatProvider(provider) {
   if (normalized === "sms_bower") {
     return "SMSBower";
   }
+  if (normalized === "manual") {
+    return "手动模式";
+  }
   return provider || "-";
 }
 
@@ -873,7 +879,13 @@ function formatLatestActivationSummary(record) {
 }
 
 function normalizeSmsProvider(provider) {
-  return provider === "smsbower" ? "sms_bower" : provider;
+  if (provider === "smsbower") {
+    return "sms_bower";
+  }
+  if (provider === "manual_sms") {
+    return "manual";
+  }
+  return provider;
 }
 
 function formatDateTime(value) {
@@ -1517,6 +1529,9 @@ function formatSmsProviderName(provider) {
   }
   if (normalized === "sms_bower") {
     return "SMSBower";
+  }
+  if (normalized === "manual") {
+    return "手动模式";
   }
   return provider || "短信服务";
 }

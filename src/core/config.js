@@ -78,6 +78,9 @@ export const DEFAULT_CONFIG = Object.freeze({
         maxPrice: 0.055,
         verificationCodeWaitTimeout: 60,
         activationValidSeconds: 1500
+      },
+      manual: {
+        mobileNumber: ""
       }
     }
   }
@@ -134,14 +137,28 @@ export function validateConfig(config) {
   }
   if (normalized.register.mode !== "reauthorize" && normalized.smsService.provider) {
     const smsConfig = normalized.smsService.providers[normalized.smsService.provider];
-    if (!smsConfig?.baseUrl) {
-      errors.push("短信服务 baseUrl 不能为空");
-    }
-    if (!smsConfig?.apiKey) {
-      errors.push("短信服务 apiKey 不能为空");
+    if (normalized.smsService.provider === "manual") {
+      if (!normalizeMobileNumber(smsConfig?.mobileNumber)) {
+        errors.push("手动短信模式手机号不能为空");
+      }
+    } else {
+      if (!smsConfig?.baseUrl) {
+        errors.push("短信服务 baseUrl 不能为空");
+      }
+      if (!smsConfig?.apiKey) {
+        errors.push("短信服务 apiKey 不能为空");
+      }
     }
   }
   return errors;
+}
+
+function normalizeMobileNumber(value) {
+  const text = String(value || "").trim();
+  if (!text) {
+    return "";
+  }
+  return text.startsWith("+") ? text : `+${text}`;
 }
 
 function isPlainObject(value) {
@@ -176,6 +193,15 @@ function migrateConfig(config) {
   migrated.smsService = migrated.smsService || {};
   if (migrated.smsService.provider === "smsbower") {
     migrated.smsService.provider = "sms_bower";
+  }
+  if (migrated.smsService.provider === "manual_sms") {
+    migrated.smsService.provider = "manual";
+  }
+  if (migrated.smsService.providers?.manual_sms && !migrated.smsService.providers.manual) {
+    migrated.smsService.providers.manual = migrated.smsService.providers.manual_sms;
+  }
+  if (migrated.smsService.providers?.manual?.mobileNumber) {
+    migrated.smsService.providers.manual.mobileNumber = normalizeMobileNumber(migrated.smsService.providers.manual.mobileNumber);
   }
   migrated.smsService.favoriteCountries = {
     hero_sms: [],

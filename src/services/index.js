@@ -6,6 +6,7 @@ import { CpaAccountService } from "./cpaAccountService.js";
 import { OutlookMailEmailService } from "./outlookMailService.js";
 import { HeroSmsService } from "./heroSmsService.js";
 import { SmsBowerService } from "./smsBowerService.js";
+import { ManualSmsService } from "./manualSmsService.js";
 
 export function createServices(config) {
   const httpClient = new HttpClient(config.httpService);
@@ -52,12 +53,18 @@ function createSmsService(provider, providerConfig, httpClient, activationStore,
   if (provider === "sms_bower" || provider === "smsbower") {
     return new SmsBowerService(providerConfig, httpClient, activationStore, activationStoreConfig);
   }
+  if (provider === "manual") {
+    return new ManualSmsService(providerConfig);
+  }
   throw new Error(`不支持的短信服务: ${provider}`);
 }
 
 function normalizeSmsProvider(provider) {
   if (provider === "smsbower") {
     return "sms_bower";
+  }
+  if (provider === "manual_sms") {
+    return "manual";
   }
   return provider;
 }
