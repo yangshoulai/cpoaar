@@ -10,7 +10,19 @@ export async function hasPhoneChallenge(ctx) {
   if (await ctx.tabs.urlContains("/add-phone")) {
     return true;
   }
+  if (await isPhoneOtpSelectChannelPage(ctx)) {
+    return true;
+  }
   return Boolean(await resolvePhoneInputSelector(ctx));
+}
+
+export async function isPhoneOtpSelectChannelPage(ctx) {
+  if (!await ctx.tabs.urlContains("/phone-otp/select-channel")) {
+    return false;
+  }
+  return Boolean(await ctx.tabs.execute(() => {
+    return document.body?.textContent?.includes("验证您的手机号码") || false;
+  }));
 }
 
 export async function resolvePhoneInputSelector(ctx) {
