@@ -32,6 +32,10 @@ export class WaitEmailVerificationCodeNode extends RegisterNode {
         check: () => ctx.tabs.query("button[data-dd-action-name='Try again']")
       },
       {
+        name: "needs_phone",
+        check: async () => await hasPhoneChallenge(ctx) ? "phone_challenge" : null
+      },
+      {
         name: "code_input",
         check: () => ctx.tabs.query("input[name='code']")
       },
@@ -42,10 +46,6 @@ export class WaitEmailVerificationCodeNode extends RegisterNode {
       {
         name: "account_deactivated",
         check: () => findAccountDeactivatedMessage(ctx)
-      },
-      {
-        name: "needs_phone",
-        check: async () => await hasPhoneChallenge(ctx) ? "phone_challenge" : null
       },
       {
         name: "consent",

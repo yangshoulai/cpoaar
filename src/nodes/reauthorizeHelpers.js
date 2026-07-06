@@ -13,6 +13,9 @@ export async function hasPhoneChallenge(ctx) {
   if (await isPhoneOtpSelectChannelPage(ctx)) {
     return true;
   }
+  if (await isPhoneVerificationCodePage(ctx)) {
+    return true;
+  }
   return Boolean(await resolvePhoneInputSelector(ctx));
 }
 
@@ -22,6 +25,17 @@ export async function isPhoneOtpSelectChannelPage(ctx) {
   }
   return Boolean(await ctx.tabs.execute(() => {
     return document.body?.textContent?.includes("验证您的手机号码") || false;
+  }));
+}
+
+export async function isPhoneVerificationCodePage(ctx) {
+  if (!await ctx.tabs.urlContains("/phone-verification")) {
+    return false;
+  }
+  return Boolean(await ctx.tabs.execute(() => {
+    const text = document.body?.textContent || "";
+    const hasPhonePrompt = text.includes("查看你的手机") || text.includes("Check your phone");
+    return hasPhonePrompt && Boolean(document.querySelector("input[name='code']"));
   }));
 }
 
