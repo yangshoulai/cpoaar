@@ -238,5 +238,5 @@ async function isAboutYouReady(ctx) {
   if (ageInput) {
     return true;
   }
-  return ctx.tabs.hasBirthDateSpinbuttons();
+  return Boolean(await ctx.tabs.query("input[name='birthday']"));
 }

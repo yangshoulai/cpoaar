@@ -141,20 +141,36 @@ async function fillAgeOrBirthDate(ctx, account) {
       : { ok: false, error: "年龄输入框填写失败" };
   }
 
-  if (!await ctx.tabs.hasBirthDateSpinbuttons()) {
+  if (!await ctx.tabs.query("input[name='birthday']")) {
     return { ok: false, error: "未找到年龄输入框或生日输入框" };
   }
   const birthDate = normalizeBirthDate(account);
   logger.info("填写出生日期", birthDate);
-  const fillResult = await ctx.tabs.fillBirthDateSpinbuttons(birthDate);
-  return fillResult.ok
+  const fillResult = await ctx.tabs.setBirthdayInputValue(birthDate.value);
+  return fillResult.ok && fillResult.value === birthDate.value
     ? { ok: true }
-    : { ok: false, error: `生日输入框填写失败: missing=${fillResult.missing || ""}` };
+    : { ok: false, error: `生日输入框填写失败: value=${fillResult.value || ""}` };
 }
 
 function normalizeBirthDate(account) {
+  if (account.birthDate?.value) {
+    return {
+      year: account.birthDate.year || account.birthDate.value.slice(0, 4),
+      month: account.birthDate.month || account.birthDate.value.slice(5, 7),
+      day: account.birthDate.day || account.birthDate.value.slice(8, 10),
+      value: account.birthDate.value
+    };
+  }
   if (account.birthDate?.year && account.birthDate?.month && account.birthDate?.day) {
-    return account.birthDate;
+    const year = String(account.birthDate.year).padStart(4, "0");
+    const month = String(account.birthDate.month).padStart(2, "0");
+    const day = String(account.birthDate.day).padStart(2, "0");
+    return {
+      year,
+      month,
+      day,
+      value: `${year}-${month}-${day}`
+    };
   }
   const year = String(new Date().getFullYear() - Number(account.age || 21));
   return {

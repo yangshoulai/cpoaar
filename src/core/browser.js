@@ -118,12 +118,8 @@ export class TabController {
     return this.execute(runBrowserPageAction, ["clickPrimarySubmitButton"]);
   }
 
-  async hasBirthDateSpinbuttons() {
-    return this.execute(runBrowserPageAction, ["hasBirthDateSpinbuttons"]);
-  }
-
-  async fillBirthDateSpinbuttons(birthDate) {
-    return this.execute(runBrowserPageAction, ["fillBirthDateSpinbuttons", birthDate]);
+  async setBirthdayInputValue(value) {
+    return this.execute(runBrowserPageAction, ["setBirthdayInputValue", value]);
   }
 
   async queryText(selector) {
@@ -533,84 +529,15 @@ function runBrowserPageAction(action, firstArg = null, secondArg = null) {
     element.dispatchEvent(new Event("change", { bubbles: true }));
   }
 
-  function findBirthDateSpinbutton(type) {
-    const selector = `div[role='spinbutton'][data-type='${type}']`;
-    const element = document.querySelector(selector);
-    return element && isVisible(element) ? element : null;
-  }
-
-  function hasBirthDateSpinbuttons() {
-    return Boolean(
-      findBirthDateSpinbutton("year")
-      && findBirthDateSpinbutton("month")
-      && findBirthDateSpinbutton("day")
-    );
-  }
-
-  function fillBirthDateSpinbuttons(birthDate) {
-    const values = [
-      ["year", String(birthDate?.year || "").padStart(4, "0")],
-      ["month", String(birthDate?.month || "").padStart(2, "0")],
-      ["day", String(birthDate?.day || "").padStart(2, "0")]
-    ];
-    for (const [type, value] of values) {
-      const element = findBirthDateSpinbutton(type);
-      if (!element) {
-        return { ok: false, missing: type };
-      }
-      clickElement(element);
-      element.focus();
-      selectElementText(element);
-      typeKeyboardText(element, value);
-      element.dispatchEvent(new Event("change", { bubbles: true }));
-    }
-    return { ok: true };
-  }
-
-  function selectElementText(element) {
-    const selection = window.getSelection();
-    if (!selection) {
-      return;
-    }
-    const range = document.createRange();
-    range.selectNodeContents(element);
-    selection.removeAllRanges();
-    selection.addRange(range);
-  }
-
-  function typeKeyboardText(element, text) {
-    for (const char of String(text)) {
-      const code = /\d/.test(char) ? `Digit${char}` : "";
-      element.dispatchEvent(new KeyboardEvent("keydown", {
-        key: char,
-        code,
-        bubbles: true,
-        cancelable: true
-      }));
-      element.dispatchEvent(new KeyboardEvent("keypress", {
-        key: char,
-        code,
-        bubbles: true,
-        cancelable: true
-      }));
-      element.dispatchEvent(new InputEvent("beforeinput", {
-        bubbles: true,
-        cancelable: true,
-        data: char,
-        inputType: "insertText"
-      }));
-      element.dispatchEvent(new InputEvent("input", {
-        bubbles: true,
-        data: char,
-        inputType: "insertText"
-      }));
-      element.dispatchEvent(new KeyboardEvent("keyup", {
-        key: char,
-        code,
-        bubbles: true,
-        cancelable: true
-      }));
-    }
+  function setHiddenInputValue(element, value) {
+    setNativeValue(element, value);
+    element.dispatchEvent(new InputEvent("input", {
+      bubbles: true,
+      data: value,
+      inputType: "insertReplacementText"
+    }));
+    element.dispatchEvent(new Event("change", { bubbles: true }));
+    element.dispatchEvent(new Event("blur", { bubbles: true }));
   }
 
   if (action === "findEmailInput") {
@@ -654,12 +581,17 @@ function runBrowserPageAction(action, firstArg = null, secondArg = null) {
     return { ok: true, element: describeElement(button) };
   }
 
-  if (action === "hasBirthDateSpinbuttons") {
-    return hasBirthDateSpinbuttons();
-  }
-
-  if (action === "fillBirthDateSpinbuttons") {
-    return fillBirthDateSpinbuttons(firstArg);
+  if (action === "setBirthdayInputValue") {
+    const element = document.querySelector("input[name='birthday']");
+    if (!(element instanceof HTMLInputElement)) {
+      return { ok: false, value: "", element: null };
+    }
+    setHiddenInputValue(element, String(firstArg || ""));
+    return {
+      ok: true,
+      value: element.value || "",
+      element: describeElement(element)
+    };
   }
 
   if (action === "fillSelector") {
