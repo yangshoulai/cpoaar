@@ -33,25 +33,13 @@ export class FillAboutYouNode extends RegisterNode {
     if (!birthdayResult.ok) {
       return NodeResult.fail("about_you_failed", birthdayResult.error);
     }
-    const submitReady = await waitForAnyCondition([
-      {
-        name: "submit_ready",
-        check: () => findClickableSubmitButton(ctx)
-      }
-    ], {
-      timeoutMs: 10000,
-      intervalMs: 300,
-      label: "资料页提交按钮可用",
-      signal: ctx.signal
-    });
-    if (!submitReady.matched) {
-      return NodeResult.fail("about_you_failed", "资料页提交按钮不可用");
+    const submitResult = birthdayResult.mode === "birthday_to_age"
+      ? await switchBirthdayModeToAgeAndSubmit(ctx, account)
+      : await clickSubmitWhenReady(ctx, "资料页提交按钮可用");
+    if (!submitResult.ok) {
+      return NodeResult.fail("about_you_failed", submitResult.error || "资料页提交按钮点击失败");
     }
-    const submitResult = await ctx.tabs.clickPrimarySubmitButton();
-    if (!submitResult?.ok) {
-      return NodeResult.fail("about_you_failed", "资料页提交按钮点击失败");
-    }
-    logger.info("资料页提交按钮已点击");
+    logger.info("资料页提交按钮已点击", submitResult.submitResult || submitResult);
 
     const result = await waitForAnyCondition([
       {
@@ -133,50 +121,166 @@ async function findClickableSubmitButton(ctx) {
   });
 }
 
+async function clickSubmitWhenReady(ctx, label) {
+  const submitReady = await waitForAnyCondition([
+    {
+      name: "submit_ready",
+      check: () => findClickableSubmitButton(ctx)
+    }
+  ], {
+    timeoutMs: 10000,
+    intervalMs: 300,
+    label,
+    signal: ctx.signal
+  });
+  if (!submitReady.matched) {
+    return { ok: false, error: "资料页提交按钮不可用" };
+  }
+  const submitResult = await ctx.tabs.clickPrimarySubmitButton();
+  if (!submitResult?.ok) {
+    return { ok: false, error: "资料页提交按钮点击失败", submitResult };
+  }
+  return { ok: true, submitResult };
+}
+
+async function switchBirthdayModeToAgeAndSubmit(ctx, account) {
+  logger.info("出生日期输入模式改用年龄输入：首次提交触发校验错误");
+  const firstSubmit = await clickSubmitWhenReady(ctx, "出生日期页首次提交触发校验错误");
+  if (!firstSubmit.ok) {
+    return firstSubmit;
+  }
+
+  const firstSubmitResult = await waitForAnyCondition([
+    {
+      name: "age_input",
+      check: () => ctx.tabs.query("input[name='age']")
+    },
+    {
+      name: "use_birthdate_link",
+      check: () => findUseBirthDateLink(ctx)
+    },
+    {
+      name: "validation_error",
+      check: () => findAboutYouValidationError(ctx)
+    }
+  ], {
+    timeoutMs: 10000,
+    intervalMs: 300,
+    label: "出生日期页首次提交后的校验错误或年龄输入框",
+    signal: ctx.signal
+  });
+  if (!firstSubmitResult.matched) {
+    return { ok: false, error: "出生日期页首次提交后未出现校验错误或年龄输入框" };
+  }
+  logger.info("出生日期页首次提交后状态", {
+    name: firstSubmitResult.name,
+    value: firstSubmitResult.value
+  });
+
+  if (firstSubmitResult.name !== "age_input" && !await ctx.tabs.query("input[name='age']")) {
+    logger.info("出生日期输入模式改用年龄输入：二次提交切换输入方式");
+    const secondSubmit = await clickSubmitWhenReady(ctx, "出生日期页二次提交切换年龄输入");
+    if (!secondSubmit.ok) {
+      return secondSubmit;
+    }
+  }
+
+  const ageReady = await waitForAnyCondition([
+    {
+      name: "age_input",
+      check: () => ctx.tabs.query("input[name='age']")
+    },
+    {
+      name: "use_birthdate_link",
+      check: () => findUseBirthDateLink(ctx)
+    }
+  ], {
+    timeoutMs: 10000,
+    intervalMs: 300,
+    label: "等待年龄输入框出现",
+    signal: ctx.signal
+  });
+  if (!ageReady.matched) {
+    return { ok: false, error: "二次提交后未出现年龄输入框" };
+  }
+
+  if (!await ctx.tabs.query("input[name='age']")) {
+    const retryAgeReady = await waitForAnyCondition([
+      {
+        name: "age_input",
+        check: () => ctx.tabs.query("input[name='age']")
+      }
+    ], {
+      timeoutMs: 3000,
+      intervalMs: 300,
+      label: "使用出生日期链接出现后等待年龄输入框",
+      signal: ctx.signal
+    });
+    if (!retryAgeReady.matched) {
+      return { ok: false, error: "页面已切换但未找到年龄输入框" };
+    }
+  }
+
+  const fillResult = await ctx.tabs.fill("input[name='age']", String(account.age));
+  if (!fillResult.ok) {
+    return { ok: false, error: "年龄输入框填写失败" };
+  }
+  logger.info("出生日期输入模式已切换为年龄输入并填写", { age: account.age });
+  return clickSubmitWhenReady(ctx, "年龄输入后提交资料页");
+}
+
+async function findAboutYouValidationError(ctx) {
+  return ctx.tabs.execute(() => {
+    const selectors = [
+      "ul[class^='_errors_']",
+      "ul[class*='_errors_']",
+      "[role='alert']",
+      "span[slot='errorMessage']"
+    ];
+    for (const selector of selectors) {
+      const elements = Array.from(document.querySelectorAll(selector));
+      const element = elements.find((item) => {
+        const style = window.getComputedStyle(item);
+        return style.visibility !== "hidden"
+          && style.display !== "none"
+          && item.textContent.trim();
+      });
+      if (element) {
+        return {
+          selector,
+          text: element.textContent.trim()
+        };
+      }
+    }
+    return null;
+  });
+}
+
+async function findUseBirthDateLink(ctx) {
+  return ctx.tabs.execute(() => {
+    const links = Array.from(document.querySelectorAll("a"));
+    const link = links.find((item) => item.textContent.includes("使用出生日期"));
+    return link ? {
+      text: link.textContent.trim(),
+      href: link.getAttribute("href") || ""
+    } : null;
+  });
+}
+
 async function fillAgeOrBirthDate(ctx, account) {
   if (await ctx.tabs.query("input[name='age']")) {
     const fillResult = await ctx.tabs.fill("input[name='age']", String(account.age));
     return fillResult.ok
-      ? { ok: true }
+      ? { ok: true, mode: "age" }
       : { ok: false, error: "年龄输入框填写失败" };
   }
 
   if (!await ctx.tabs.query("input[name='birthday']")) {
     return { ok: false, error: "未找到年龄输入框或生日输入框" };
   }
-  const birthDate = normalizeBirthDate(account);
-  logger.info("填写出生日期", birthDate);
-  const fillResult = await ctx.tabs.setBirthdayInputValue(birthDate.value);
-  return fillResult.ok && fillResult.value === birthDate.value
-    ? { ok: true }
-    : { ok: false, error: `生日输入框填写失败: value=${fillResult.value || ""}` };
-}
-
-function normalizeBirthDate(account) {
-  if (account.birthDate?.value) {
-    return {
-      year: account.birthDate.year || account.birthDate.value.slice(0, 4),
-      month: account.birthDate.month || account.birthDate.value.slice(5, 7),
-      day: account.birthDate.day || account.birthDate.value.slice(8, 10),
-      value: account.birthDate.value
-    };
-  }
-  if (account.birthDate?.year && account.birthDate?.month && account.birthDate?.day) {
-    const year = String(account.birthDate.year).padStart(4, "0");
-    const month = String(account.birthDate.month).padStart(2, "0");
-    const day = String(account.birthDate.day).padStart(2, "0");
-    return {
-      year,
-      month,
-      day,
-      value: `${year}-${month}-${day}`
-    };
-  }
-  const year = String(new Date().getFullYear() - Number(account.age || 21));
-  return {
-    year,
-    month: "07",
-    day: "02",
-    value: `${year}-07-02`
-  };
+  logger.info("检测到出生日期输入模式，跳过生日填写，改用提交校验切换年龄输入", {
+    age: account.age,
+    birthDate: account.birthDate?.value || ""
+  });
+  return { ok: true, mode: "birthday_to_age" };
 }

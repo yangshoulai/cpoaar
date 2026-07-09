@@ -118,10 +118,6 @@ export class TabController {
     return this.execute(runBrowserPageAction, ["clickPrimarySubmitButton"]);
   }
 
-  async setBirthdayInputValue(value) {
-    return this.execute(runBrowserPageAction, ["setBirthdayInputValue", value]);
-  }
-
   async queryText(selector) {
     return this.execute((inputSelector) => {
       const element = document.querySelector(inputSelector);
@@ -529,17 +525,6 @@ function runBrowserPageAction(action, firstArg = null, secondArg = null) {
     element.dispatchEvent(new Event("change", { bubbles: true }));
   }
 
-  function setHiddenInputValue(element, value) {
-    setNativeValue(element, value);
-    element.dispatchEvent(new InputEvent("input", {
-      bubbles: true,
-      data: value,
-      inputType: "insertReplacementText"
-    }));
-    element.dispatchEvent(new Event("change", { bubbles: true }));
-    element.dispatchEvent(new Event("blur", { bubbles: true }));
-  }
-
   if (action === "findEmailInput") {
     const element = findEmailInputElement();
     return element ? describeElement(element) : null;
@@ -579,19 +564,6 @@ function runBrowserPageAction(action, firstArg = null, secondArg = null) {
     }
     clickElement(button);
     return { ok: true, element: describeElement(button) };
-  }
-
-  if (action === "setBirthdayInputValue") {
-    const element = document.querySelector("input[name='birthday']");
-    if (!(element instanceof HTMLInputElement)) {
-      return { ok: false, value: "", element: null };
-    }
-    setHiddenInputValue(element, String(firstArg || ""));
-    return {
-      ok: true,
-      value: element.value || "",
-      element: describeElement(element)
-    };
   }
 
   if (action === "fillSelector") {
