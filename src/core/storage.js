@@ -3,6 +3,7 @@ import { DEFAULT_CONFIG, normalizeConfig } from "./config.js";
 export const STORAGE_KEYS = Object.freeze({
   config: "autoRegister.config",
   logs: "autoRegister.logs",
+  outlookMailAuth: "autoRegister.outlookMailAuth",
   outlookGroups: "autoRegister.outlookGroups",
   registerHistory: "autoRegister.registerHistory",
   snapshot: "autoRegister.snapshot"
@@ -34,6 +35,21 @@ export async function clearLogs() {
   await chrome.storage.local.set({
     [STORAGE_KEYS.logs]: []
   });
+}
+
+export async function loadOutlookMailAuthCache() {
+  const values = await chrome.storage.local.get(STORAGE_KEYS.outlookMailAuth);
+  return values[STORAGE_KEYS.outlookMailAuth] || null;
+}
+
+export async function saveOutlookMailAuthCache(cache) {
+  await chrome.storage.local.set({
+    [STORAGE_KEYS.outlookMailAuth]: cache || null
+  });
+}
+
+export async function clearOutlookMailAuthCache() {
+  await chrome.storage.local.remove(STORAGE_KEYS.outlookMailAuth);
 }
 
 export async function loadRegisterHistory() {

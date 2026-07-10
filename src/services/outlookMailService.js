@@ -1,9 +1,15 @@
 import { joinUrl } from "../core/http.js";
 import { createLogger } from "../core/logger.js";
+import { clearOutlookMailAuthCache, loadOutlookMailAuthCache, saveOutlookMailAuthCache } from "../core/storage.js";
 
 const logger = createLogger("outlook-mail");
 const OPENAI_SENDER_KEYWORD = "openai.com";
 const SUBJECT_KEYWORDS = ["ChatGPT", "OpenAI"];
+const DEFAULT_AUTH_CACHE_TTL_MINUTES = 120;
+const AUTH_CACHE_VERSION = 1;
+
+let sharedAuthCache = null;
+const initializingByCacheKey = new Map();
 
 export class OutlookMailEmailService {
   constructor(config, httpClient) {
@@ -14,9 +20,75 @@ export class OutlookMailEmailService {
   }
 
   async initialize() {
-    if (this.initialized) {
+    const cacheKey = buildAuthCacheKey(this.config);
+    if (this.initialized && isAuthCacheValid({
+      version: AUTH_CACHE_VERSION,
+      cacheKey,
+      csrfToken: this.csrfToken,
+      expiresAt: this.authExpiresAt
+    })) {
       return;
     }
+
+    if (await this._restoreAuthCache(cacheKey)) {
+      return;
+    }
+
+    if (initializingByCacheKey.has(cacheKey)) {
+      await initializingByCacheKey.get(cacheKey);
+      if (await this._restoreAuthCache(cacheKey)) {
+        return;
+      }
+    }
+
+    const initializing = this._loginAndCache(cacheKey);
+    initializingByCacheKey.set(cacheKey, initializing);
+    try {
+      await initializing;
+    } finally {
+      initializingByCacheKey.delete(cacheKey);
+    }
+  }
+
+  async clearAuthentication() {
+    await clearAuthenticationForConfig(this.config);
+    this.csrfToken = "";
+    this.initialized = false;
+    this.authExpiresAt = "";
+  }
+
+  async _restoreAuthCache(cacheKey) {
+    const memoryCache = sharedAuthCache;
+    if (isAuthCacheValid(memoryCache, cacheKey)) {
+      this._applyAuthCache(memoryCache);
+      logger.info("复用 OutlookMail 认证缓存", {
+        source: "memory",
+        expiresAt: memoryCache.expiresAt
+      });
+      return true;
+    }
+
+    const persistedCache = await loadOutlookMailAuthCache();
+    if (isAuthCacheValid(persistedCache, cacheKey)) {
+      sharedAuthCache = persistedCache;
+      this._applyAuthCache(persistedCache);
+      logger.info("复用 OutlookMail 认证缓存", {
+        source: "storage",
+        expiresAt: persistedCache.expiresAt
+      });
+      return true;
+    }
+    return false;
+  }
+
+  _applyAuthCache(cache) {
+    this.csrfToken = cache.csrfToken || "";
+    this.initialized = true;
+    this.authExpiresAt = cache.expiresAt || "";
+    this.authCacheKey = cache.cacheKey || "";
+  }
+
+  async _loginAndCache(cacheKey) {
     logger.info("初始化 OutlookMail 会话");
     const loginPayload = await this.http.post(joinUrl(this.config.baseUrl, "/api/extension/login"), {
       password: this.config.adminPassword,
@@ -36,6 +108,17 @@ export class OutlookMailEmailService {
     });
     this.csrfToken = csrfPayload?.csrf_token || "";
     this.initialized = true;
+    this.authCacheKey = cacheKey;
+    this.authExpiresAt = new Date(Date.now() + getAuthCacheTtlMs(this.config)).toISOString();
+    sharedAuthCache = {
+      version: AUTH_CACHE_VERSION,
+      cacheKey,
+      csrfToken: this.csrfToken,
+      cachedAt: new Date().toISOString(),
+      expiresAt: this.authExpiresAt,
+      baseUrl: normalizeBaseUrl(this.config.baseUrl)
+    };
+    await saveOutlookMailAuthCache(sharedAuthCache);
     logger.info("OutlookMail 初始化完成");
   }
 
@@ -284,12 +367,105 @@ export class OutlookMailEmailService {
       headers["X-CSRFToken"] = this.csrfToken;
     }
     const url = joinUrl(this.config.baseUrl, path);
-    return this.http.request(url, {
-      ...options,
-      headers,
-      credentials: options.credentials ?? "include"
-    });
+    try {
+      return await this.http.request(url, {
+        ...options,
+        headers,
+        credentials: options.credentials ?? "include"
+      });
+    } catch (error) {
+      if ((error.status === 401 || error.status === 403) && options.retryOnAuthFailure !== false) {
+        logger.warn("OutlookMail 请求认证失效，清除缓存后重新初始化", {
+          status: error.status,
+          path
+        });
+        await this.clearAuthentication();
+        await this.initialize();
+        return this._request(path, {
+          ...options,
+          retryOnAuthFailure: false
+        });
+      }
+      throw error;
+    }
   }
+}
+
+export async function clearAuthenticationForConfig(config = {}) {
+  sharedAuthCache = null;
+  await clearOutlookMailAuthCache();
+  await clearCookiesForBaseUrl(config.baseUrl);
+  logger.info("OutlookMail 认证信息已清除", {
+    baseUrl: normalizeBaseUrl(config.baseUrl)
+  });
+}
+
+function buildAuthCacheKey(config = {}) {
+  return [
+    AUTH_CACHE_VERSION,
+    normalizeBaseUrl(config.baseUrl),
+    hashText(config.adminPassword || "")
+  ].join("|");
+}
+
+function normalizeBaseUrl(value) {
+  return String(value || "").trim().replace(/\/+$/, "");
+}
+
+function getAuthCacheTtlMs(config = {}) {
+  const minutes = Number(config.authCacheTtlMinutes || DEFAULT_AUTH_CACHE_TTL_MINUTES);
+  return Math.max(1, minutes) * 60 * 1000;
+}
+
+function hashText(value) {
+  let hash = 5381;
+  for (const char of String(value || "")) {
+    hash = ((hash << 5) + hash) ^ char.charCodeAt(0);
+  }
+  return (hash >>> 0).toString(16);
+}
+
+function isAuthCacheValid(cache, expectedCacheKey = "") {
+  if (!cache?.csrfToken || !cache.expiresAt) {
+    return false;
+  }
+  if (cache.version !== AUTH_CACHE_VERSION) {
+    return false;
+  }
+  if (expectedCacheKey && cache.cacheKey !== expectedCacheKey) {
+    return false;
+  }
+  return Date.now() < new Date(cache.expiresAt).getTime();
+}
+
+async function clearCookiesForBaseUrl(baseUrl) {
+  const host = getHost(baseUrl);
+  if (!host || !chrome.cookies?.getAll) {
+    return;
+  }
+  const cookies = await chrome.cookies.getAll({ domain: host }).catch(() => []);
+  for (const cookie of cookies) {
+    const url = buildCookieUrl(cookie);
+    await chrome.cookies.remove({
+      url,
+      name: cookie.name,
+      storeId: cookie.storeId
+    }).catch(() => {});
+  }
+}
+
+function getHost(baseUrl) {
+  try {
+    return new URL(baseUrl).hostname;
+  } catch {
+    return "";
+  }
+}
+
+function buildCookieUrl(cookie) {
+  const protocol = cookie.secure ? "https:" : "http:";
+  const domain = cookie.domain.replace(/^\./, "");
+  return `${protocol}//${domain}${cookie.path || "/"}`;
 }
 
 function findCandidateMessage(messages, sentAfter) {

@@ -66,6 +66,8 @@ const CONFIG_SCHEMAS = {
     selectField("服务提供者", "emailService.provider", [["outlook_mail", "OutlookMail"]]),
     textField("接口地址", "emailService.providers.outlook_mail.baseUrl"),
     textField("管理员密码", "emailService.providers.outlook_mail.adminPassword"),
+    numberField("认证缓存时长", "emailService.providers.outlook_mail.authCacheTtlMinutes", "分钟"),
+    actionField("清除认证信息", "清除 OutlookMail 登录缓存和相关 Cookie，下次操作会重新认证。", clearOutlookMailAuthentication),
     checkboxField("使用临时邮箱", "emailService.providers.outlook_mail.useTempEmail"),
     section("临时邮箱", () => getConfigValue(appConfig, "emailService.providers.outlook_mail.useTempEmail") === true),
     selectField("临时邮箱提供者", "emailService.providers.outlook_mail.tempEmail.provider", [["cloudflare", "Cloudflare"]], "", () => getConfigValue(appConfig, "emailService.providers.outlook_mail.useTempEmail") === true),
@@ -1968,6 +1970,15 @@ async function refreshOutlookGroups() {
     showConfigMessage(`Outlook 分组已刷新：${outlookGroups.length} 个`);
   } catch (error) {
     showConfigMessage(`刷新 Outlook 分组失败：${error.message}`, true);
+  }
+}
+
+async function clearOutlookMailAuthentication() {
+  try {
+    await createServices(appConfig).emailService.clearAuthentication();
+    showConfigMessage("OutlookMail 认证信息已清除，下次操作会重新认证");
+  } catch (error) {
+    showConfigMessage(`清除 OutlookMail 认证信息失败：${error.message}`, true);
   }
 }
 

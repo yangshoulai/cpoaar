@@ -41,6 +41,7 @@ export const DEFAULT_CONFIG = Object.freeze({
       outlook_mail: {
         baseUrl: "",
         adminPassword: "",
+        authCacheTtlMinutes: 120,
         useTempEmail: false,
         tempEmail: {
           provider: "cloudflare",
