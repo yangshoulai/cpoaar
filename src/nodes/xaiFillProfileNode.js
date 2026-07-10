@@ -4,6 +4,7 @@ import { createLogger } from "../core/logger.js";
 import { clickVisibleButtonByText } from "./xaiHelpers.js";
 
 const logger = createLogger("node.xai-profile");
+const TURNSTILE_WAIT_TIMEOUT_MS = 120000;
 
 export class XAiFillProfileNode extends RegisterNode {
   static name = "xai_fill_profile";
@@ -51,6 +52,13 @@ export class XAiFillProfileNode extends RegisterNode {
     const passwordResult = await ctx.tabs.fill("input[name='password']", account.password || "");
     if (!passwordResult.ok) {
       return NodeResult.fail("xai_profile_failed", "未找到 password 输入框");
+    }
+
+    const turnstileResult = await waitForTurnstileIfPresent(ctx);
+    if (!turnstileResult.ok) {
+      return NodeResult.fail("xai_turnstile_timeout", turnstileResult.error || "等待 Cloudflare Turnstile 完成超时", {
+        turnstile: turnstileResult
+      });
     }
 
     const submitReady = await waitForAnyCondition([
@@ -103,5 +111,112 @@ async function findCompleteRegistrationButton(ctx) {
         && !element.disabled
         && element.getAttribute("aria-disabled") !== "true";
     }
+  });
+}
+
+async function waitForTurnstileIfPresent(ctx) {
+  const detection = await detectTurnstile(ctx);
+  if (!detection.present) {
+    return {
+      ok: true,
+      present: false,
+      completed: false,
+      reason: "not_present"
+    };
+  }
+
+  logger.info("检测到 Cloudflare Turnstile，等待验证完成", {
+    selectors: detection.selectors,
+    hasResponseInput: detection.hasResponseInput,
+    tokenLength: detection.tokenLength
+  });
+
+  const completed = await waitForAnyCondition(buildTurnstileCompletionConditions(ctx, detection), {
+    timeoutMs: TURNSTILE_WAIT_TIMEOUT_MS,
+    intervalMs: 800,
+    label: "Cloudflare Turnstile 验证完成",
+    signal: ctx.signal
+  });
+  if (!completed.matched) {
+    const latest = await detectTurnstile(ctx);
+    logger.warn("等待 Cloudflare Turnstile 完成超时", {
+      latest
+    });
+    return {
+      ok: false,
+      present: true,
+      completed: false,
+      error: "Cloudflare Turnstile 未在限定时间内完成",
+      latest
+    };
+  }
+
+  logger.info("Cloudflare Turnstile 已完成", {
+    matched: completed.name,
+    value: completed.value
+  });
+  return {
+    ok: true,
+    present: true,
+    completed: true,
+    matched: completed.name,
+    value: completed.value
+  };
+}
+
+function buildTurnstileCompletionConditions(ctx, detection) {
+  if (detection.hasResponseInput) {
+    return [
+      {
+        name: "turnstile_token",
+        check: () => detectCompletedTurnstile(ctx)
+      }
+    ];
+  }
+  return [
+    {
+      name: "submit_ready_after_turnstile",
+      check: () => findCompleteRegistrationButton(ctx)
+    }
+  ];
+}
+
+async function detectTurnstile(ctx) {
+  return ctx.tabs.execute(() => {
+    const responseInput = document.querySelector("input[name='cf-turnstile-response']");
+    const selectors = [];
+    if (responseInput) {
+      selectors.push("input[name='cf-turnstile-response']");
+    }
+    if (document.querySelector(".cf-turnstile")) {
+      selectors.push(".cf-turnstile");
+    }
+    if (document.querySelector("[data-sitekey]")) {
+      selectors.push("[data-sitekey]");
+    }
+    if (document.querySelector("iframe[src*='challenges.cloudflare.com']")) {
+      selectors.push("iframe[src*='challenges.cloudflare.com']");
+    }
+    const token = String(responseInput?.value || "").trim();
+    return {
+      present: selectors.length > 0,
+      selectors,
+      hasResponseInput: Boolean(responseInput),
+      tokenLength: token.length,
+      completed: token.length > 0
+    };
+  });
+}
+
+async function detectCompletedTurnstile(ctx) {
+  return ctx.tabs.execute(() => {
+    const responseInput = document.querySelector("input[name='cf-turnstile-response']");
+    const token = String(responseInput?.value || "").trim();
+    if (!token) {
+      return null;
+    }
+    return {
+      tokenLength: token.length
+    };
   });
 }

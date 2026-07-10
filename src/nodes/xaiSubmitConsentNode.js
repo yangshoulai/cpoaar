@@ -84,7 +84,8 @@ export class XAiSubmitConsentNode extends RegisterNode {
     }
     const redirectUrl = buildXAiRedirectUrl(authorizationCode, oauthState);
     const submitResult = await ctx.services.accountManagementService.submitRedirectUrl(redirectUrl, {
-      accountType: ACCOUNT_TYPES.xai
+      accountType: ACCOUNT_TYPES.xai,
+      emailAddress: ctx.state.account?.emailAddress || ""
     });
     if (!submitResult.success) {
       return NodeResult.fail("xai_account_export_failed", submitResult.error || `xAI 账号导出失败: ${submitResult.status}`, {
@@ -118,7 +119,8 @@ export class XAiSubmitConsentNode extends RegisterNode {
       xaiOauthState: oauthState,
       xaiOauthRedirectUrl: redirectUrl,
       accountExportStatus: submitResult.status,
-      accountExportResult: submitResult.attributes || {}
+      accountExportResult: submitResult.attributes || {},
+      xaiAuthFilePatchResult: submitResult.xaiAuthFilePatchResult || null
     });
 
     logger.info("xAI 账号导出完成", {

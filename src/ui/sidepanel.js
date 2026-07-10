@@ -121,7 +121,6 @@ const CONFIG_SCHEMAS = {
     section("账号服务"),
     selectField("服务提供者", "accountManagementService.provider", [["cpa", "CPA"]]),
     textField("接口地址", "accountManagementService.providers.cpa.baseUrl"),
-    textField("xAI 接口地址", "accountManagementService.providers.cpa.xaiBaseUrl"),
     textField("管理密钥", "accountManagementService.providers.cpa.secretKey")
   ],
   register: [
@@ -196,10 +195,13 @@ const RESULT_STATUS_LABELS = {
   xai_email_submitted: "xAI 邮箱已提交",
   xai_email_verified: "xAI 邮箱已验证",
   xai_profile_submitted: "xAI 资料已提交",
+  xai_turnstile_timeout: "xAI Turnstile 超时",
   xai_registration_completed: "xAI 注册完成",
   xai_oauth_consent_ready: "xAI OAuth Consent 已就绪",
   xai_oauth_state_missing: "xAI OAuth 缺少 state",
   xai_account_exported: "xAI 账号已导出",
+  xai_account_export_failed: "xAI 账号导出失败",
+  xai_auth_file_patch_failed: "xAI 认证文件修补失败",
   chatgpt_tab_open_failed: "打开失败",
   email_submit_failed: "邮箱提交失败",
   email_verification_unexpected_url: "邮箱验证页面异常",
