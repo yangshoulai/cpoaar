@@ -29,7 +29,7 @@ const RUN_MODE_META = Object.freeze({
   [RUN_MODES.xaiRegister]: {
     label: "xAI 注册",
     accountType: ACCOUNT_TYPES.xai,
-    configGroups: ["accountProfile", "httpService", "emailService", "accountManagementService"]
+    configGroups: ["accountProfile", "httpService", "emailService", "accountManagementService", "register"]
   }
 });
 

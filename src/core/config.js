@@ -26,6 +26,7 @@ export const DEFAULT_CONFIG = Object.freeze({
   },
   register: {
     mode: RUN_MODES.openaiRegister,
+    batchCount: 1,
     verificationCodeWaitTimeout: 60,
     phoneNumberRetryAttempts: 5,
     smsVerificationRetryAttempts: 5,
@@ -133,6 +134,7 @@ export function validateConfig(config) {
   const accountConfig = normalized.accountManagementService.providers.cpa;
   const runMode = normalizeRunMode(normalized.register.mode);
   const accountProfile = getAccountProfileConfig(normalized);
+  const batchCount = Number(normalized.register.batchCount);
 
   if (accountProfile.randomPassword === false && !accountProfile.specifiedPassword) {
     errors.push("关闭随机密码时，固定密码不能为空");
@@ -148,6 +150,9 @@ export function validateConfig(config) {
   }
   if (!accountConfig.secretKey) {
     errors.push("CPA secretKey 不能为空");
+  }
+  if (runMode !== RUN_MODES.openaiReauthorize && (!Number.isInteger(batchCount) || batchCount < 1)) {
+    errors.push("批量注册数量必须是大于等于 1 的整数");
   }
   if (isOpenAiRegisterMode(runMode) && normalized.smsService.provider) {
     const smsConfig = normalized.smsService.providers[normalized.smsService.provider];

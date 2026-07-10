@@ -16,8 +16,12 @@ export class StartupInitializeNode extends RegisterNode {
   }
 
   async execute(ctx) {
-    await clearLogs();
-    logger.info("启动初始化：日志已清理");
+    if (ctx.state?.preserveLogsOnStartup) {
+      logger.info("启动初始化：批量注册模式保留日志");
+    } else {
+      await clearLogs();
+      logger.info("启动初始化：日志已清理");
+    }
     if (isXAiRegisterMode(ctx.config.register?.mode)) {
       logger.info("xAI 注册模式：清理 x.ai Cookie 并关闭相关标签页");
       await ctx.tabs.resetXAiSession();

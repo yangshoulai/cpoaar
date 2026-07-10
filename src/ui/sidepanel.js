@@ -8,6 +8,7 @@ import {
   getAccountTypeLabel,
   getRunModeConfigGroups,
   getRunModeLabel,
+  isOpenAiRegisterMode,
   isOpenAiReauthorizeMode,
   normalizeRunMode
 } from "../core/runModes.js";
@@ -124,16 +125,19 @@ const CONFIG_SCHEMAS = {
     textField("管理密钥", "accountManagementService.providers.cpa.secretKey")
   ],
   register: [
+    section("批量注册"),
+    batchCountField("注册数量", "register.batchCount", "失败会记录日志并继续下一轮；停止按钮会终止后续轮次。"),
     section("注册流程"),
     numberField("邮箱验证码超时", "register.verificationCodeWaitTimeout", "秒"),
-    numberField("手机号重试次数", "register.phoneNumberRetryAttempts", "次"),
-    numberField("短信 OAuth 重试", "register.smsVerificationRetryAttempts", "次"),
-    numberField("OAuth 重新认证阈值", "register.oauthReauthWaitThresholdSeconds", "秒"),
-    section("手机号策略"),
+    numberField("手机号重试次数", "register.phoneNumberRetryAttempts", "次", () => isOpenAiRegisterMode(getRegisterMode())),
+    numberField("短信 OAuth 重试", "register.smsVerificationRetryAttempts", "次", () => isOpenAiRegisterMode(getRegisterMode())),
+    numberField("OAuth 重新认证阈值", "register.oauthReauthWaitThresholdSeconds", "秒", () => isOpenAiRegisterMode(getRegisterMode())),
+    section("手机号策略", () => isOpenAiRegisterMode(getRegisterMode())),
     checkboxField("号码复用", "register.reusePhoneNumber", null, {
+      visible: () => isOpenAiRegisterMode(getRegisterMode()),
       summary: () => formatLatestActivationSummary(latestActivationRecord)
     }),
-    numberField("复用最小间隔", "register.reuseMinIntervalSeconds", "秒")
+    numberField("复用最小间隔", "register.reuseMinIntervalSeconds", "秒", () => isOpenAiRegisterMode(getRegisterMode()))
   ],
   reauthorize: [
     section("重新授权"),
@@ -260,6 +264,7 @@ let latestActivationRecord = await activationStore.getLatestActivation();
 let historyFilterValue = "";
 let historyPage = 1;
 const HISTORY_PAGE_SIZE = 10;
+const BATCH_COUNT_PRESETS = Object.freeze([1, 5, 10, 20, 50, 100]);
 const smsPriceLookupState = {};
 const heroSmsBalanceState = {
   queried: false,
@@ -267,6 +272,7 @@ const heroSmsBalanceState = {
   balance: null,
   error: ""
 };
+let batchRunState = null;
 
 applyTheme();
 renderAll();
@@ -352,21 +358,111 @@ async function startFresh() {
 }
 
 async function startRegisterFresh() {
+  if (isFlowBusy()) {
+    showConfigMessage("流程正在运行，不能重复启动", true);
+    return;
+  }
   const errors = validateConfig(appConfig);
   if (errors.length) {
     showConfigMessage(errors.join("；"), true);
     return;
   }
+  const batchCount = getRegisterBatchCount();
   await clearSnapshot();
   await clearLogs();
   dom.logList.innerHTML = "";
+  renderedLogIds.clear();
+  batchRunState = {
+    total: batchCount,
+    success: 0,
+    failed: 0,
+    stopRequested: false,
+    startedAt: new Date().toISOString()
+  };
+  logger.info("从头开始执行注册流程", {
+    mode: getRegisterMode(),
+    label: getRunModeLabel(getRegisterMode()),
+    batchCount
+  });
+  try {
+    for (let round = 1; round <= batchCount; round += 1) {
+      if (batchRunState.stopRequested) {
+        break;
+      }
+      await clearSnapshot();
+      const result = await runRegisterBatchRound(round, batchCount);
+      if (result?.status === "stopped" || batchRunState.stopRequested) {
+        batchRunState.stopRequested = true;
+        break;
+      }
+      if (result?.success) {
+        batchRunState.success += 1;
+      } else {
+        batchRunState.failed += 1;
+      }
+    }
+    const stopped = batchRunState.stopRequested;
+    logger[stopped ? "warn" : "info"]("批量注册流程结束", {
+      total: batchRunState.total,
+      success: batchRunState.success,
+      failed: batchRunState.failed,
+      stopped
+    });
+    showConfigMessage(stopped
+      ? `批量注册已停止：成功 ${batchRunState.success}，失败 ${batchRunState.failed}`
+      : `批量注册完成：成功 ${batchRunState.success}，失败 ${batchRunState.failed}`);
+  } finally {
+    runner = null;
+    batchRunState = null;
+    updateRunButtons(lastSnapshot);
+  }
+}
+
+async function runRegisterBatchRound(round, total) {
   const tabs = new TabController();
-  const ctx = createRunContext(tabs, await createInitialSnapshot(flow), {});
+  const ctx = createRunContext(tabs, await createInitialSnapshot(flow), {
+    preserveLogsOnStartup: total > 1,
+    batch: {
+      index: round,
+      total
+    }
+  });
   const currentRunner = new FlowRunner(flow, ctx, renderSnapshot);
   runner = currentRunner;
-  logger.info("从头开始执行注册流程", { mode: getRegisterMode(), label: getRunModeLabel(getRegisterMode()) });
+  logger.info("批量注册轮次开始", {
+    round,
+    total,
+    mode: getRegisterMode(),
+    label: getRunModeLabel(getRegisterMode())
+  });
   try {
-    await currentRunner.run();
+    const result = await currentRunner.run();
+    if (result.success) {
+      logger.info("批量注册轮次成功", {
+        round,
+        total,
+        status: result.status
+      });
+    } else {
+      logger.warn("批量注册轮次失败，继续下一轮", {
+        round,
+        total,
+        status: result.status,
+        error: result.error || ""
+      });
+    }
+    return result;
+  } catch (error) {
+    logger.warn("批量注册轮次异常，继续下一轮", {
+      round,
+      total,
+      error: error.message
+    });
+    return {
+      success: false,
+      status: "exception",
+      error: error.message
+    };
   } finally {
     if (runner === currentRunner) {
       runner = null;
@@ -375,7 +471,7 @@ async function startRegisterFresh() {
 }
 
 async function startManualReauthorize() {
-  if (lastSnapshot.status === "running") {
+  if (isFlowBusy()) {
     showConfigMessage("流程正在运行，不能启动重新授权", true);
     return;
   }
@@ -400,6 +496,10 @@ async function startManualReauthorize() {
 }
 
 async function continueRun() {
+  if (isFlowBusy()) {
+    showConfigMessage("流程正在运行，不能继续其它快照", true);
+    return;
+  }
   const snapshot = await loadSnapshot();
   if (!snapshot) {
     showConfigMessage("没有可继续的流程快照", true);
@@ -430,6 +530,10 @@ async function continueRun() {
 }
 
 async function retryCurrentNode() {
+  if (isFlowBusy()) {
+    showConfigMessage("流程正在运行，不能重试当前节点", true);
+    return;
+  }
   const snapshot = await loadSnapshot();
   if (!snapshot?.currentNode) {
     showConfigMessage("没有可重试的当前节点", true);
@@ -480,6 +584,9 @@ async function retryCurrentNode() {
 }
 
 async function stopRun() {
+  if (batchRunState) {
+    batchRunState.stopRequested = true;
+  }
   if (runner) {
     runner.stop();
   }
@@ -722,7 +829,7 @@ async function deleteHistoryRecord(record, button) {
 }
 
 async function startReauthorize(record) {
-  if (lastSnapshot.status === "running") {
+  if (isFlowBusy()) {
     showConfigMessage("流程正在运行，不能启动重新授权", true);
     return;
   }
@@ -966,6 +1073,10 @@ function createRunContext(tabs, snapshot, state) {
   };
 }
 
+function isFlowBusy() {
+  return Boolean(batchRunState) || lastSnapshot?.status === "running";
+}
+
 function buildStoppedSnapshot(snapshot = {}, error = "流程已停止") {
   const currentNode = snapshot.currentNode || flow.startNode;
   const nodeResults = { ...(snapshot.nodeResults || {}) };
@@ -999,7 +1110,7 @@ function renderAll() {
 
 function renderModeSwitch() {
   const mode = getRegisterMode();
-  const isRunning = lastSnapshot?.status === "running";
+  const isRunning = isFlowBusy();
   const isReauthorizeMode = isOpenAiReauthorizeMode(mode);
   dom.registerModeSelect.value = mode;
   dom.registerModeSelect.disabled = isRunning;
@@ -1009,7 +1120,7 @@ function renderModeSwitch() {
 
 async function updateRegisterMode(mode) {
   const normalizedMode = normalizeRunMode(mode);
-  if (lastSnapshot?.status === "running") {
+  if (isFlowBusy()) {
     renderModeSwitch();
     showConfigMessage("流程运行中不能切换模式", true);
     return;
@@ -1186,6 +1297,10 @@ function createControl(field) {
     return createBalanceActionControl(field);
   }
 
+  if (field.type === "batch-count") {
+    return createBatchCountControl(field);
+  }
+
   if (field.type === "checkbox") {
     const wrapper = document.createElement("span");
     wrapper.className = "switch-control";
@@ -1232,6 +1347,63 @@ function createControl(field) {
     return createPriceControl(field, input);
   }
   return input;
+}
+
+function createBatchCountControl(field) {
+  const wrapper = document.createElement("span");
+  wrapper.className = "batch-count-control";
+  const select = document.createElement("select");
+  select.className = "batch-count-select";
+  const currentValue = normalizeBatchCount(getConfigValue(appConfig, field.path));
+  for (const preset of BATCH_COUNT_PRESETS) {
+    const option = document.createElement("option");
+    option.value = String(preset);
+    option.textContent = `${preset} 个`;
+    select.append(option);
+  }
+  const customOption = document.createElement("option");
+  customOption.value = "custom";
+  customOption.textContent = "自定义";
+  select.append(customOption);
+  select.value = BATCH_COUNT_PRESETS.includes(currentValue) ? String(currentValue) : "custom";
+
+  const input = document.createElement("input");
+  input.type = "number";
+  input.min = "1";
+  input.step = "1";
+  input.dataset.path = field.path;
+  input.value = String(currentValue);
+
+  select.addEventListener("change", () => {
+    if (select.value === "custom") {
+      input.focus();
+      input.select();
+      return;
+    }
+    const nextValue = normalizeBatchCount(select.value);
+    input.value = String(nextValue);
+    setBatchCountConfig(field.path, nextValue);
+  });
+
+  input.addEventListener("input", () => {
+    if (input.value === "") {
+      select.value = "custom";
+      return;
+    }
+    const nextValue = normalizeBatchCount(input.value);
+    select.value = BATCH_COUNT_PRESETS.includes(nextValue) ? String(nextValue) : "custom";
+    setBatchCountConfig(field.path, nextValue);
+  });
+
+  input.addEventListener("blur", () => {
+    const nextValue = normalizeBatchCount(input.value);
+    input.value = String(nextValue);
+    select.value = BATCH_COUNT_PRESETS.includes(nextValue) ? String(nextValue) : "custom";
+    setBatchCountConfig(field.path, nextValue);
+  });
+
+  wrapper.append(select, input);
+  return wrapper;
 }
 
 function createCountryControl(field) {
@@ -1768,7 +1940,7 @@ function renderSnapshot(snapshot) {
 function updateRunButtons(snapshot) {
   const status = snapshot.status || "idle";
   const hasStarted = Boolean(snapshot.startedAt) || Object.keys(snapshot.nodeResults || {}).length > 0;
-  const isRunning = status === "running";
+  const isRunning = status === "running" || Boolean(batchRunState);
   const retryPolicy = snapshot.currentNode
     ? getManualRetryPolicy(getRegisterMode(), snapshot.currentNode)
     : { retryable: false };
@@ -1932,6 +2104,10 @@ function numberField(label, path, unit = "", visible = null) {
   return { kind: "field", type: "number", label, path, help: unit, visible };
 }
 
+function batchCountField(label, path, help = "", visible = null) {
+  return { kind: "field", type: "batch-count", label, path, help, visible };
+}
+
 function balanceActionField(label, help, action, visible = null) {
   return { kind: "field", type: "balance-action", label, help, action, visible, buttonText: "查询余额" };
 }
@@ -1981,6 +2157,20 @@ function getConfigValue(config, path) {
 
 function getRegisterMode() {
   return normalizeRunMode(getConfigValue(appConfig, "register.mode"));
+}
+
+function getRegisterBatchCount() {
+  return normalizeBatchCount(getConfigValue(appConfig, "register.batchCount"));
+}
+
+function normalizeBatchCount(value) {
+  const number = Math.floor(Number(value));
+  return Number.isFinite(number) && number >= 1 ? number : 1;
+}
+
+function setBatchCountConfig(path, value) {
+  setConfigValue(appConfig, path, normalizeBatchCount(value));
+  scheduleConfigSave();
 }
 
 function getCurrentAccountType() {
