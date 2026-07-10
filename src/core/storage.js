@@ -1,4 +1,5 @@
 import { DEFAULT_CONFIG, normalizeConfig } from "./config.js";
+import { ACCOUNT_TYPES, RUN_MODES, getAccountTypeByMode, normalizeAccountType, normalizeRunMode } from "./runModes.js";
 
 export const STORAGE_KEYS = Object.freeze({
   config: "autoRegister.config",
@@ -54,12 +55,12 @@ export async function clearOutlookMailAuthCache() {
 
 export async function loadRegisterHistory() {
   const values = await chrome.storage.local.get(STORAGE_KEYS.registerHistory);
-  return values[STORAGE_KEYS.registerHistory] || [];
+  return normalizeRegisterHistory(values[STORAGE_KEYS.registerHistory]);
 }
 
 export async function saveRegisterHistory(history) {
   await chrome.storage.local.set({
-    [STORAGE_KEYS.registerHistory]: history
+    [STORAGE_KEYS.registerHistory]: normalizeRegisterHistory(history)
   });
 }
 
@@ -108,4 +109,26 @@ export async function saveSnapshot(snapshot) {
 
 export async function clearSnapshot() {
   await chrome.storage.local.remove(STORAGE_KEYS.snapshot);
+}
+
+function normalizeRegisterHistory(history) {
+  if (!Array.isArray(history)) {
+    return [];
+  }
+  return history.map(normalizeRegisterHistoryRecord);
+}
+
+function normalizeRegisterHistoryRecord(record) {
+  const source = record || {};
+  const flowMode = normalizeRunMode(
+    source.flowMode
+    || source.registerMode
+    || (source.accountType === ACCOUNT_TYPES.grok ? RUN_MODES.grokRegister : RUN_MODES.openaiRegister)
+  );
+  const accountType = normalizeAccountType(source.accountType || getAccountTypeByMode(flowMode));
+  return {
+    ...source,
+    accountType,
+    flowMode
+  };
 }

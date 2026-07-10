@@ -2,6 +2,15 @@ import { TabController } from "../core/browser.js";
 import { FlowRunner, createInitialSnapshot } from "../core/flow.js";
 import { STORAGE_KEYS, clearLogs, clearSnapshot, loadConfig, loadLogs, loadOutlookGroups, loadRegisterHistory, loadSnapshot, saveConfig, saveOutlookGroups, saveSnapshot } from "../core/storage.js";
 import { normalizeConfig, validateConfig } from "../core/config.js";
+import {
+  RUN_MODES,
+  getAccountTypeByMode,
+  getAccountTypeLabel,
+  getRunModeConfigGroups,
+  getRunModeLabel,
+  isOpenAiReauthorizeMode,
+  normalizeRunMode
+} from "../core/runModes.js";
 import { createLogger } from "../core/logger.js";
 import { createServices } from "../services/index.js";
 import { deleteRegisteredAccount } from "../services/accountDeletionService.js";
@@ -14,6 +23,7 @@ const dom = {
   themeToggleButton: document.querySelector("#themeToggleButton"),
   emailRegisterModeInput: document.querySelector("#emailRegisterModeInput"),
   reauthorizeModeInput: document.querySelector("#reauthorizeModeInput"),
+  grokRegisterModeInput: document.querySelector("#grokRegisterModeInput"),
   reauthorizeManualPanel: document.querySelector("#reauthorizeManualPanel"),
   reauthorizeEmailInput: document.querySelector("#reauthorizeEmailInput"),
   startFreshButton: document.querySelector("#startFreshButton"),
@@ -42,7 +52,7 @@ const dom = {
 };
 
 const CONFIG_GROUPS = [
-  ["accountService", "账号"],
+  ["accountProfile", "账号"],
   ["httpService", "HTTP"],
   ["emailService", "邮箱"],
   ["smsService", "短信"],
@@ -52,11 +62,14 @@ const CONFIG_GROUPS = [
 ];
 
 const CONFIG_SCHEMAS = {
-  accountService: [
-    section("账号生成"),
-    checkboxField("随机密码", "accountService.randomPassword"),
-    textField("固定密码", "accountService.specifiedPassword", "关闭随机密码时使用。", () => getConfigValue(appConfig, "accountService.randomPassword") === false)
-  ],
+  accountProfile: () => {
+    const basePath = getActiveAccountProfilePath();
+    return [
+      section(`${getAccountTypeLabel(getCurrentAccountType())} 账号生成`),
+      checkboxField("随机密码", `${basePath}.randomPassword`),
+      textField("固定密码", `${basePath}.specifiedPassword`, "关闭随机密码时使用。", () => getConfigValue(appConfig, `${basePath}.randomPassword`) === false)
+    ];
+  },
   httpService: [
     section("HTTP"),
     numberField("默认超时", "httpService.defaultTimeout", "秒")
@@ -181,6 +194,7 @@ const RESULT_STATUS_LABELS = {
   sms_verification_retry_select_codex_account: "重试 OAuth",
   phone_verified: "手机号已验证",
   codex_account_exported: "账号已导出",
+  grok_register_flow_pending: "Grok 注册流程待配置",
   chatgpt_tab_open_failed: "打开失败",
   email_submit_failed: "邮箱提交失败",
   email_verification_unexpected_url: "邮箱验证页面异常",
@@ -293,10 +307,11 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
 });
 
 function bindEvents() {
-  dom.emailRegisterModeInput.addEventListener("change", () => updateRegisterMode("email_register"));
-  dom.reauthorizeModeInput.addEventListener("change", () => updateRegisterMode("reauthorize"));
+  dom.emailRegisterModeInput.addEventListener("change", () => updateRegisterMode(RUN_MODES.openaiRegister));
+  dom.reauthorizeModeInput.addEventListener("change", () => updateRegisterMode(RUN_MODES.openaiReauthorize));
+  dom.grokRegisterModeInput.addEventListener("change", () => updateRegisterMode(RUN_MODES.grokRegister));
   dom.reauthorizeEmailInput.addEventListener("input", () => {
-    if (getRegisterMode() === "reauthorize") {
+    if (isOpenAiReauthorizeMode(getRegisterMode())) {
       showConfigMessage("");
     }
   });
@@ -324,14 +339,14 @@ function bindEvents() {
 }
 
 async function startFresh() {
-  if (getRegisterMode() === "reauthorize") {
+  if (isOpenAiReauthorizeMode(getRegisterMode())) {
     await startManualReauthorize();
     return;
   }
-  await startEmailRegisterFresh();
+  await startRegisterFresh();
 }
 
-async function startEmailRegisterFresh() {
+async function startRegisterFresh() {
   const errors = validateConfig(appConfig);
   if (errors.length) {
     showConfigMessage(errors.join("；"), true);
@@ -344,7 +359,7 @@ async function startEmailRegisterFresh() {
   const ctx = createRunContext(tabs, await createInitialSnapshot(flow), {});
   const currentRunner = new FlowRunner(flow, ctx, renderSnapshot);
   runner = currentRunner;
-  logger.info("从头开始执行注册流程");
+  logger.info("从头开始执行注册流程", { mode: getRegisterMode(), label: getRunModeLabel(getRegisterMode()) });
   try {
     await currentRunner.run();
   } finally {
@@ -385,6 +400,9 @@ async function continueRun() {
     showConfigMessage("没有可继续的流程快照", true);
     return;
   }
+  if (!ensureSnapshotMatchesCurrentMode(snapshot, "继续执行")) {
+    return;
+  }
   if (snapshot.status === "failed") {
     showConfigMessage("流程失败后请使用重试当前节点", true);
     return;
@@ -410,6 +428,9 @@ async function retryCurrentNode() {
   const snapshot = await loadSnapshot();
   if (!snapshot?.currentNode) {
     showConfigMessage("没有可重试的当前节点", true);
+    return;
+  }
+  if (!ensureSnapshotMatchesCurrentMode(snapshot, "重试当前节点")) {
     return;
   }
   const retryPolicy = getManualRetryPolicy(getRegisterMode(), snapshot.currentNode);
@@ -466,14 +487,13 @@ async function stopRun() {
 }
 
 async function renderHistoryPanel() {
-  dom.dataPanelTitle.textContent = getRegisterMode() === "reauthorize"
-    ? "历史记录 · 重新授权模式"
-    : "历史记录";
+  dom.dataPanelTitle.textContent = `历史记录 · ${getAccountTypeLabel(getCurrentAccountType())}`;
   await renderHistoryTable();
 }
 
 async function renderHistoryTable() {
   const history = await loadRegisterHistory();
+  const accountHistoryCount = history.filter((record) => record.accountType === getCurrentAccountType()).length;
   const filtered = filterHistory(history);
   const totalPages = Math.max(1, Math.ceil(filtered.length / HISTORY_PAGE_SIZE));
   historyPage = Math.min(Math.max(1, historyPage), totalPages);
@@ -484,7 +504,7 @@ async function renderHistoryTable() {
   if (!pageRecords.length) {
     const empty = document.createElement("div");
     empty.className = "table-empty";
-    empty.textContent = history.length ? "没有匹配的历史账号" : "暂无已完成注册的账号";
+    empty.textContent = accountHistoryCount ? "没有匹配的历史账号" : `暂无 ${getAccountTypeLabel(getCurrentAccountType())} 历史账号`;
     dom.dataTableWrap.append(empty);
     return;
   }
@@ -544,17 +564,19 @@ function renderHistoryControls(totalCount, totalPages) {
 }
 
 function filterHistory(history) {
+  const accountType = getCurrentAccountType();
+  const accountRecords = history.filter((record) => record.accountType === accountType);
   const keyword = historyFilterValue.toLowerCase();
   if (!keyword) {
-    return history;
+    return accountRecords;
   }
-  return history.filter((record) => String(record.emailAddress || "").toLowerCase().includes(keyword));
+  return accountRecords.filter((record) => String(record.emailAddress || "").toLowerCase().includes(keyword));
 }
 
 function renderHistoryAction(record) {
   const actions = document.createElement("span");
   actions.className = "table-actions";
-  if (getRegisterMode() === "reauthorize") {
+  if (isOpenAiReauthorizeMode(getRegisterMode())) {
     const reauthorizeButton = document.createElement("button");
     reauthorizeButton.type = "button";
     reauthorizeButton.className = "table-action primary";
@@ -717,7 +739,7 @@ async function startReauthorize(record) {
 }
 
 async function runReauthorizeFlow(initialState, logData = {}) {
-  setConfigValue(appConfig, "register.mode", "reauthorize");
+  setConfigValue(appConfig, "register.mode", RUN_MODES.openaiReauthorize);
   await saveConfig(appConfig);
   rebuildFlowForMode();
   await clearSnapshot();
@@ -811,6 +833,8 @@ async function buildManualEmailAccount(emailAddress) {
 
 function buildManualHistoryRecord(emailAddress, emailAccount) {
   return {
+    accountType: getAccountTypeByMode(RUN_MODES.openaiReauthorize),
+    flowMode: RUN_MODES.openaiReauthorize,
     emailAddress,
     emailMode: emailAccount.attributes?.mode === "temp" ? "temp" : "outlook_pool",
     emailAccount,
@@ -915,13 +939,21 @@ function toTime(value) {
 }
 
 function createRunContext(tabs, snapshot, state) {
+  const runMode = getRegisterMode();
+  const accountType = getAccountTypeByMode(runMode);
   return {
     config: appConfig,
     services: createServices(appConfig),
     tabs,
-    state: { ...(state || {}) },
+    state: {
+      ...(state || {}),
+      runMode,
+      accountType
+    },
     snapshot: {
       ...snapshot,
+      runMode,
+      accountType,
       status: "running",
       nodeResults: snapshot.nodeResults || {},
       nodeStarts: snapshot.nodeStarts || {}
@@ -963,37 +995,38 @@ function renderAll() {
 function renderModeSwitch() {
   const mode = getRegisterMode();
   const isRunning = lastSnapshot?.status === "running";
-  const isReauthorizeMode = mode === "reauthorize";
-  dom.emailRegisterModeInput.checked = mode === "email_register";
+  const isReauthorizeMode = isOpenAiReauthorizeMode(mode);
+  dom.emailRegisterModeInput.checked = mode === RUN_MODES.openaiRegister;
   dom.reauthorizeModeInput.checked = isReauthorizeMode;
+  dom.grokRegisterModeInput.checked = mode === RUN_MODES.grokRegister;
   dom.emailRegisterModeInput.disabled = isRunning;
   dom.reauthorizeModeInput.disabled = isRunning;
+  dom.grokRegisterModeInput.disabled = isRunning;
   dom.reauthorizeManualPanel.hidden = !isReauthorizeMode;
   dom.reauthorizeEmailInput.disabled = isRunning || !isReauthorizeMode;
 }
 
 async function updateRegisterMode(mode) {
+  const normalizedMode = normalizeRunMode(mode);
   if (lastSnapshot?.status === "running") {
     renderModeSwitch();
     showConfigMessage("流程运行中不能切换模式", true);
     return;
   }
-  if (getRegisterMode() === mode) {
+  if (getRegisterMode() === normalizedMode) {
     renderModeSwitch();
     return;
   }
-  setConfigValue(appConfig, "register.mode", mode);
+  setConfigValue(appConfig, "register.mode", normalizedMode);
   await saveConfig(appConfig);
   rebuildFlowForMode();
-  if (activeConfigGroup === "reauthorize" && mode !== "reauthorize") {
-    activeConfigGroup = "register";
-  }
+  ensureActiveConfigGroup();
   renderModeSwitch();
   renderConfigTabs();
   renderConfigForm();
   renderSnapshot(lastSnapshot);
   await renderHistoryPanel();
-  showConfigMessage(mode === "reauthorize" ? "已切换到重新授权模式" : "已切换到邮箱注册模式");
+  showConfigMessage(`已切换到${getRunModeLabel(normalizedMode)}模式`);
 }
 
 function rebuildFlowForMode() {
@@ -1002,8 +1035,10 @@ function rebuildFlowForMode() {
 
 function renderConfigTabs() {
   dom.configTabs.innerHTML = "";
+  const allowedGroups = new Set(getRunModeConfigGroups(getRegisterMode()));
+  ensureActiveConfigGroup();
   for (const [key, label] of CONFIG_GROUPS) {
-    if (key === "reauthorize" && getRegisterMode() !== "reauthorize") {
+    if (!allowedGroups.has(key)) {
       continue;
     }
     const button = document.createElement("button");
@@ -1021,7 +1056,9 @@ function renderConfigTabs() {
 
 function renderConfigForm() {
   dom.configForm.innerHTML = "";
-  const schema = CONFIG_SCHEMAS[activeConfigGroup] || [];
+  ensureActiveConfigGroup();
+  const rawSchema = CONFIG_SCHEMAS[activeConfigGroup] || [];
+  const schema = typeof rawSchema === "function" ? rawSchema() : rawSchema;
   if (!schema.length) {
     const empty = document.createElement("p");
     empty.className = "empty-config";
@@ -1319,11 +1356,10 @@ function createBalanceActionControl(field) {
 function handleConfigControlChange(field, value, rerender) {
   setConfigValue(appConfig, field.path, coerceConfigValue(field, value));
   if (field.path === "register.mode") {
+    setConfigValue(appConfig, "register.mode", normalizeRunMode(getConfigValue(appConfig, "register.mode")));
     rebuildFlowForMode();
     renderModeSwitch();
-    if (activeConfigGroup === "reauthorize" && getRegisterMode() !== "reauthorize") {
-      activeConfigGroup = "register";
-    }
+    ensureActiveConfigGroup();
     renderHistoryPanel();
     renderSnapshot(lastSnapshot);
   }
@@ -1937,7 +1973,48 @@ function getConfigValue(config, path) {
 }
 
 function getRegisterMode() {
-  return getConfigValue(appConfig, "register.mode") || "email_register";
+  return normalizeRunMode(getConfigValue(appConfig, "register.mode"));
+}
+
+function getCurrentAccountType() {
+  return getAccountTypeByMode(getRegisterMode());
+}
+
+function getActiveAccountProfilePath() {
+  return `accountProfiles.${getCurrentAccountType()}`;
+}
+
+function ensureActiveConfigGroup() {
+  const allowedGroups = getRunModeConfigGroups(getRegisterMode());
+  if (!allowedGroups.includes(activeConfigGroup)) {
+    activeConfigGroup = allowedGroups[0] || "emailService";
+  }
+}
+
+function ensureSnapshotMatchesCurrentMode(snapshot, actionLabel) {
+  const snapshotMode = resolveSnapshotRunMode(snapshot);
+  const currentMode = getRegisterMode();
+  if (snapshotMode === currentMode) {
+    return true;
+  }
+  showConfigMessage(
+    `${actionLabel}失败：当前快照属于${getRunModeLabel(snapshotMode)}模式，请切换回该模式后再操作`,
+    true
+  );
+  return false;
+}
+
+function resolveSnapshotRunMode(snapshot = {}) {
+  if (snapshot.runMode || snapshot.state?.runMode) {
+    return normalizeRunMode(snapshot.runMode || snapshot.state?.runMode);
+  }
+  if (snapshot.currentNode === "grok_register_placeholder") {
+    return RUN_MODES.grokRegister;
+  }
+  if (["reauthorize_phone_challenge", "reauthorize_account_deleted", "reauthorize_delete_account"].includes(snapshot.currentNode)) {
+    return RUN_MODES.openaiReauthorize;
+  }
+  return RUN_MODES.openaiRegister;
 }
 
 function setConfigValue(config, path, value) {

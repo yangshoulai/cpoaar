@@ -12,10 +12,16 @@ import { SubmitCodexConsentNode } from "../nodes/submitCodexConsentNode.js";
 import { ReauthorizePhoneChallengeNode } from "../nodes/reauthorizePhoneChallengeNode.js";
 import { ReauthorizeAccountDeletedNode } from "../nodes/reauthorizeAccountDeletedNode.js";
 import { ReauthorizeDeleteAccountNode } from "../nodes/reauthorizeDeleteAccountNode.js";
+import { GrokRegisterPlaceholderNode } from "../nodes/grokRegisterPlaceholderNode.js";
+import { RUN_MODES, isGrokRegisterMode, isOpenAiReauthorizeMode, normalizeRunMode } from "../core/runModes.js";
 
-export function buildRegisterFlow(mode = "email_register") {
-  if (mode === "reauthorize") {
+export function buildRegisterFlow(mode = RUN_MODES.openaiRegister) {
+  const runMode = normalizeRunMode(mode);
+  if (isOpenAiReauthorizeMode(runMode)) {
     return buildReauthorizeFlow();
+  }
+  if (isGrokRegisterMode(runMode)) {
+    return buildGrokRegisterFlow();
   }
   return buildEmailRegisterFlow();
 }
@@ -121,8 +127,25 @@ function buildReauthorizeFlow() {
   });
 }
 
-export function getNodeOrder(mode = "email_register") {
-  if (mode === "reauthorize") {
+function buildGrokRegisterFlow() {
+  const nodes = [
+    new StartupInitializeNode(),
+    new GrokRegisterPlaceholderNode()
+  ];
+  return new RegisterFlow({
+    startNode: StartupInitializeNode.name,
+    nodes: Object.fromEntries(nodes.map((node) => [node.name, node])),
+    transitions: {
+      [StartupInitializeNode.name]: [
+        { status: StartupInitializeNode.statuses.success, target: GrokRegisterPlaceholderNode.name }
+      ]
+    }
+  });
+}
+
+export function getNodeOrder(mode = RUN_MODES.openaiRegister) {
+  const runMode = normalizeRunMode(mode);
+  if (isOpenAiReauthorizeMode(runMode)) {
     return [
       StartupInitializeNode.name,
       SelectCodexAccountNode.name,
@@ -133,13 +156,19 @@ export function getNodeOrder(mode = "email_register") {
       SubmitCodexConsentNode.name
     ];
   }
+  if (isGrokRegisterMode(runMode)) {
+    return GROK_REGISTER_NODE_ORDER;
+  }
   return EMAIL_REGISTER_NODE_ORDER;
 }
 
-export function getManualRetryPolicy(mode = "email_register", nodeName) {
-  const policies = mode === "reauthorize"
+export function getManualRetryPolicy(mode = RUN_MODES.openaiRegister, nodeName) {
+  const runMode = normalizeRunMode(mode);
+  const policies = isOpenAiReauthorizeMode(runMode)
     ? REAUTHORIZE_MANUAL_RETRY_POLICIES
-    : EMAIL_REGISTER_MANUAL_RETRY_POLICIES;
+    : isGrokRegisterMode(runMode)
+      ? GROK_REGISTER_MANUAL_RETRY_POLICIES
+      : EMAIL_REGISTER_MANUAL_RETRY_POLICIES;
   return policies[nodeName] || {
     retryable: false,
     message: "当前节点不支持手动重试"
@@ -157,6 +186,11 @@ export const EMAIL_REGISTER_NODE_ORDER = [
   AddPhoneNumberNode.name,
   WaitSmsVerificationCodeNode.name,
   SubmitCodexConsentNode.name
+];
+
+export const GROK_REGISTER_NODE_ORDER = [
+  StartupInitializeNode.name,
+  GrokRegisterPlaceholderNode.name
 ];
 
 export const NODE_ORDER = EMAIL_REGISTER_NODE_ORDER;
@@ -206,4 +240,9 @@ const REAUTHORIZE_MANUAL_RETRY_POLICIES = Object.freeze({
     message: "删除账号节点不支持重试"
   }),
   [SubmitCodexConsentNode.name]: retryFromNode(SelectCodexAccountNode.name)
+});
+
+const GROK_REGISTER_MANUAL_RETRY_POLICIES = Object.freeze({
+  [StartupInitializeNode.name]: RETRY_DIRECT,
+  [GrokRegisterPlaceholderNode.name]: RETRY_DIRECT
 });

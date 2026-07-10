@@ -1,10 +1,21 @@
+import { ACCOUNT_TYPES, RUN_MODES, getAccountTypeByMode, isOpenAiRegisterMode, normalizeRunMode } from "./runModes.js";
+
+const DEFAULT_ACCOUNT_PROFILE = Object.freeze({
+  randomPassword: true,
+  specifiedPassword: ""
+});
+
 export const DEFAULT_CONFIG = Object.freeze({
   ui: {
     theme: "dark"
   },
-  accountService: {
-    randomPassword: true,
-    specifiedPassword: ""
+  accountProfiles: {
+    openai: {
+      ...DEFAULT_ACCOUNT_PROFILE
+    },
+    grok: {
+      ...DEFAULT_ACCOUNT_PROFILE
+    }
   },
   httpService: {
     defaultTimeout: 30,
@@ -14,7 +25,7 @@ export const DEFAULT_CONFIG = Object.freeze({
     level: "INFO"
   },
   register: {
-    mode: "email_register",
+    mode: RUN_MODES.openaiRegister,
     verificationCodeWaitTimeout: 60,
     phoneNumberRetryAttempts: 5,
     smsVerificationRetryAttempts: 5,
@@ -120,8 +131,10 @@ export function validateConfig(config) {
   const normalized = normalizeConfig(config);
   const emailConfig = normalized.emailService.providers.outlook_mail;
   const accountConfig = normalized.accountManagementService.providers.cpa;
+  const runMode = normalizeRunMode(normalized.register.mode);
+  const accountProfile = getAccountProfileConfig(normalized);
 
-  if (normalized.accountService.randomPassword === false && !normalized.accountService.specifiedPassword) {
+  if (accountProfile.randomPassword === false && !accountProfile.specifiedPassword) {
     errors.push("关闭随机密码时，固定密码不能为空");
   }
   if (!emailConfig.baseUrl) {
@@ -136,7 +149,7 @@ export function validateConfig(config) {
   if (!accountConfig.secretKey) {
     errors.push("CPA secretKey 不能为空");
   }
-  if (normalized.register.mode !== "reauthorize" && normalized.smsService.provider) {
+  if (isOpenAiRegisterMode(runMode) && normalized.smsService.provider) {
     const smsConfig = normalized.smsService.providers[normalized.smsService.provider];
     if (normalized.smsService.provider === "manual") {
       if (!normalizeMobileNumber(smsConfig?.mobileNumber)) {
@@ -152,6 +165,12 @@ export function validateConfig(config) {
     }
   }
   return errors;
+}
+
+export function getAccountProfileConfig(config) {
+  const normalized = config?.accountProfiles ? config : normalizeConfig(config || {});
+  const accountType = getAccountTypeByMode(normalized.register?.mode);
+  return normalized.accountProfiles?.[accountType] || normalized.accountProfiles?.[ACCOUNT_TYPES.openai] || DEFAULT_ACCOUNT_PROFILE;
 }
 
 function normalizeMobileNumber(value) {
@@ -173,12 +192,24 @@ function migrateConfig(config) {
   }
   delete migrated.accountExportService;
 
-  if (
-    migrated.accountService
-    && !Object.hasOwn(migrated.accountService, "randomPassword")
-  ) {
-    migrated.accountService.randomPassword = !migrated.accountService.specifiedPassword;
+  const legacyAccountService = migrated.accountService;
+  if (legacyAccountService && !Object.hasOwn(legacyAccountService, "randomPassword")) {
+    legacyAccountService.randomPassword = !legacyAccountService.specifiedPassword;
   }
+  migrated.accountProfiles = {
+    openai: {
+      ...DEFAULT_ACCOUNT_PROFILE,
+      ...(legacyAccountService || {}),
+      ...(migrated.accountProfiles?.openai || {})
+    },
+    grok: {
+      ...DEFAULT_ACCOUNT_PROFILE,
+      ...(migrated.accountProfiles?.grok || {})
+    }
+  };
+  delete migrated.accountService;
+  migrated.register = migrated.register || {};
+  migrated.register.mode = normalizeRunMode(migrated.register.mode);
 
   const legacyActivationStore = migrated.smsService?.activationStore;
   if (legacyActivationStore) {

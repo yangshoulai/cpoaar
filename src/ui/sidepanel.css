@@ -130,6 +130,8 @@ button:disabled {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
   min-height: 34px;
   padding: 0;
   border-bottom: 0;
@@ -146,7 +148,10 @@ button:disabled {
 .top-actions {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
+  flex: 1 1 250px;
   gap: 8px;
+  min-width: 0;
 }
 
 .theme-toggle {
@@ -290,6 +295,7 @@ h2 {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  min-width: 0;
 }
 
 .mode-switch-label {
@@ -301,9 +307,11 @@ h2 {
 .mode-panel {
   display: inline-flex;
   align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 2px;
   border: 1px solid var(--line);
-  border-radius: 999px;
+  border-radius: 12px;
   background: var(--panel-soft);
   padding: 2px;
 }
@@ -318,7 +326,7 @@ h2 {
   align-items: center;
   justify-content: center;
   gap: 6px;
-  min-width: 36px;
+  min-width: 58px;
   min-height: 24px;
   border: 1px solid transparent;
   border-radius: 999px;

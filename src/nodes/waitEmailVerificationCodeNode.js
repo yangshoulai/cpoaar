@@ -1,6 +1,7 @@
 import { RegisterNode, NodeResult, buildFlowStoppedResult, isFlowStopped } from "../core/flow.js";
 import { waitForAnyCondition, sleep } from "../core/browser.js";
 import { createLogger } from "../core/logger.js";
+import { isOpenAiReauthorizeMode } from "../core/runModes.js";
 import {
   clickOneTimeCodeLoginButton,
   findAccountDeactivatedMessage,
@@ -197,7 +198,7 @@ export class WaitEmailVerificationCodeNode extends RegisterNode {
 }
 
 function buildAccountDeactivatedResult(ctx, data = {}) {
-  if (ctx.config.register?.mode === "reauthorize") {
+  if (isOpenAiReauthorizeMode(ctx.config.register?.mode)) {
     return NodeResult.ok(WaitEmailVerificationCodeNode.statuses.accountDeleted, data);
   }
   return NodeResult.fail("account_create_failed", "账号已停用: account_deactivated", data);

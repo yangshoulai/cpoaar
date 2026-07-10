@@ -1,5 +1,5 @@
 import { HttpClient } from "../core/http.js";
-import { getProviderConfig } from "../core/config.js";
+import { getAccountProfileConfig, getProviderConfig } from "../core/config.js";
 import { createAccount } from "../core/account.js";
 import { SmsActivationStore } from "./smsActivationStore.js";
 import { CpaAccountService } from "./cpaAccountService.js";
@@ -24,7 +24,7 @@ export function createServices(config) {
     httpClient,
     activationStore,
     accountService: {
-      createAccount: () => createAccount(config.accountService)
+      createAccount: () => createAccount(getAccountProfileConfig(config))
     },
     emailService: new OutlookMailEmailService(
       getProviderConfig(config, "emailService"),

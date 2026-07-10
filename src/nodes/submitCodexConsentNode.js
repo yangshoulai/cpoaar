@@ -2,6 +2,7 @@ import { RegisterNode, NodeResult } from "../core/flow.js";
 import { waitForAnyCondition } from "../core/browser.js";
 import { createLogger } from "../core/logger.js";
 import { appendRegisterHistory } from "../core/storage.js";
+import { ACCOUNT_TYPES, RUN_MODES, isOpenAiRegisterMode } from "../core/runModes.js";
 
 const logger = createLogger("node.consent");
 
@@ -49,8 +50,10 @@ export class SubmitCodexConsentNode extends RegisterNode {
     }
 
     await ctx.services.emailService.callback(ctx.state.emailAccount, true);
-    if (ctx.config.register?.mode !== "reauthorize") {
+    if (isOpenAiRegisterMode(ctx.config.register?.mode)) {
       await appendRegisterHistory({
+        accountType: ACCOUNT_TYPES.openai,
+        flowMode: RUN_MODES.openaiRegister,
         emailAddress: ctx.state.account?.emailAddress || "",
         mobile: ctx.state.account?.mobile || "",
         smsProvider: ctx.state.smsMobileNumber?.attributes?.provider || "",

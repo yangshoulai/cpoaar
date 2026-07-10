@@ -1,6 +1,7 @@
 import { RegisterNode, NodeResult } from "../core/flow.js";
 import { waitForAnyCondition } from "../core/browser.js";
 import { createLogger } from "../core/logger.js";
+import { isOpenAiReauthorizeMode } from "../core/runModes.js";
 import {
   clickOneTimeCodeLoginButton,
   findAccountDeactivatedMessage,
@@ -169,7 +170,7 @@ function formatServiceError(error) {
 }
 
 function buildAccountDeactivatedResult(ctx, data = {}) {
-  if (ctx.config.register?.mode === "reauthorize") {
+  if (isOpenAiReauthorizeMode(ctx.config.register?.mode)) {
     return NodeResult.ok(SelectCodexAccountNode.statuses.accountDeleted, data);
   }
   return NodeResult.fail("codex_oauth_account_deactivated", "账号已停用: account_deactivated", data);
