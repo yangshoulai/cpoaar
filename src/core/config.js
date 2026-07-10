@@ -1,4 +1,4 @@
-import { ACCOUNT_TYPES, RUN_MODES, getAccountTypeByMode, isOpenAiRegisterMode, normalizeRunMode } from "./runModes.js";
+import { ACCOUNT_TYPES, RUN_MODES, getAccountTypeByMode, isXAiRegisterMode, isOpenAiRegisterMode, normalizeRunMode } from "./runModes.js";
 
 const DEFAULT_ACCOUNT_PROFILE = Object.freeze({
   randomPassword: true,
@@ -13,7 +13,7 @@ export const DEFAULT_CONFIG = Object.freeze({
     openai: {
       ...DEFAULT_ACCOUNT_PROFILE
     },
-    grok: {
+    xai: {
       ...DEFAULT_ACCOUNT_PROFILE
     }
   },
@@ -42,6 +42,7 @@ export const DEFAULT_CONFIG = Object.freeze({
     providers: {
       cpa: {
         baseUrl: "http://localhost:8317/v0/management",
+        xaiBaseUrl: "https://cpa-manager-plus.yangshoulai.xyz/v0/management",
         secretKey: ""
       }
     }
@@ -146,6 +147,9 @@ export function validateConfig(config) {
   if (!accountConfig.baseUrl) {
     errors.push("CPA baseUrl 不能为空");
   }
+  if (isXAiRegisterMode(runMode) && !accountConfig.xaiBaseUrl) {
+    errors.push("CPA xAI baseUrl 不能为空");
+  }
   if (!accountConfig.secretKey) {
     errors.push("CPA secretKey 不能为空");
   }
@@ -202,12 +206,19 @@ function migrateConfig(config) {
       ...(legacyAccountService || {}),
       ...(migrated.accountProfiles?.openai || {})
     },
-    grok: {
+    xai: {
       ...DEFAULT_ACCOUNT_PROFILE,
-      ...(migrated.accountProfiles?.grok || {})
+      ...(migrated.accountProfiles?.grok || {}),
+      ...(migrated.accountProfiles?.xai || {})
     }
   };
   delete migrated.accountService;
+  if (migrated.accountManagementService?.providers?.cpa?.grokBaseUrl && !migrated.accountManagementService.providers.cpa.xaiBaseUrl) {
+    migrated.accountManagementService.providers.cpa.xaiBaseUrl = migrated.accountManagementService.providers.cpa.grokBaseUrl;
+  }
+  if (migrated.accountManagementService?.providers?.cpa) {
+    delete migrated.accountManagementService.providers.cpa.grokBaseUrl;
+  }
   migrated.register = migrated.register || {};
   migrated.register.mode = normalizeRunMode(migrated.register.mode);
 

@@ -21,9 +21,7 @@ import { HERO_SMS_COUNTRIES, SMS_BOWER_COUNTRIES } from "../data/smsCountries.js
 const logger = createLogger("ui");
 const dom = {
   themeToggleButton: document.querySelector("#themeToggleButton"),
-  emailRegisterModeInput: document.querySelector("#emailRegisterModeInput"),
-  reauthorizeModeInput: document.querySelector("#reauthorizeModeInput"),
-  grokRegisterModeInput: document.querySelector("#grokRegisterModeInput"),
+  registerModeSelect: document.querySelector("#registerModeSelect"),
   reauthorizeManualPanel: document.querySelector("#reauthorizeManualPanel"),
   reauthorizeEmailInput: document.querySelector("#reauthorizeEmailInput"),
   startFreshButton: document.querySelector("#startFreshButton"),
@@ -123,6 +121,7 @@ const CONFIG_SCHEMAS = {
     section("账号服务"),
     selectField("服务提供者", "accountManagementService.provider", [["cpa", "CPA"]]),
     textField("接口地址", "accountManagementService.providers.cpa.baseUrl"),
+    textField("xAI 接口地址", "accountManagementService.providers.cpa.xaiBaseUrl"),
     textField("管理密钥", "accountManagementService.providers.cpa.secretKey")
   ],
   register: [
@@ -194,7 +193,13 @@ const RESULT_STATUS_LABELS = {
   sms_verification_retry_select_codex_account: "重试 OAuth",
   phone_verified: "手机号已验证",
   codex_account_exported: "账号已导出",
-  grok_register_flow_pending: "Grok 注册流程待配置",
+  xai_email_submitted: "xAI 邮箱已提交",
+  xai_email_verified: "xAI 邮箱已验证",
+  xai_profile_submitted: "xAI 资料已提交",
+  xai_registration_completed: "xAI 注册完成",
+  xai_oauth_consent_ready: "xAI OAuth Consent 已就绪",
+  xai_oauth_state_missing: "xAI OAuth 缺少 state",
+  xai_account_exported: "xAI 账号已导出",
   chatgpt_tab_open_failed: "打开失败",
   email_submit_failed: "邮箱提交失败",
   email_verification_unexpected_url: "邮箱验证页面异常",
@@ -307,9 +312,7 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
 });
 
 function bindEvents() {
-  dom.emailRegisterModeInput.addEventListener("change", () => updateRegisterMode(RUN_MODES.openaiRegister));
-  dom.reauthorizeModeInput.addEventListener("change", () => updateRegisterMode(RUN_MODES.openaiReauthorize));
-  dom.grokRegisterModeInput.addEventListener("change", () => updateRegisterMode(RUN_MODES.grokRegister));
+  dom.registerModeSelect.addEventListener("change", () => updateRegisterMode(dom.registerModeSelect.value));
   dom.reauthorizeEmailInput.addEventListener("input", () => {
     if (isOpenAiReauthorizeMode(getRegisterMode())) {
       showConfigMessage("");
@@ -996,12 +999,8 @@ function renderModeSwitch() {
   const mode = getRegisterMode();
   const isRunning = lastSnapshot?.status === "running";
   const isReauthorizeMode = isOpenAiReauthorizeMode(mode);
-  dom.emailRegisterModeInput.checked = mode === RUN_MODES.openaiRegister;
-  dom.reauthorizeModeInput.checked = isReauthorizeMode;
-  dom.grokRegisterModeInput.checked = mode === RUN_MODES.grokRegister;
-  dom.emailRegisterModeInput.disabled = isRunning;
-  dom.reauthorizeModeInput.disabled = isRunning;
-  dom.grokRegisterModeInput.disabled = isRunning;
+  dom.registerModeSelect.value = mode;
+  dom.registerModeSelect.disabled = isRunning;
   dom.reauthorizeManualPanel.hidden = !isReauthorizeMode;
   dom.reauthorizeEmailInput.disabled = isRunning || !isReauthorizeMode;
 }
@@ -1815,7 +1814,13 @@ function getNodeDetailText(nodeName, snapshot) {
   if (nodeName === "fill_email_and_submit") {
     return account.emailAddress || state.emailAccount?.emailAddress || "";
   }
+  if (nodeName === "xai_open_signup_page") {
+    return account.emailAddress || state.emailAccount?.emailAddress || "";
+  }
   if (nodeName === "wait_email_verification_code") {
+    return account.emailVerificationCode || state.emailVerificationCode || "";
+  }
+  if (nodeName === "xai_wait_email_verification_code") {
     return account.emailVerificationCode || state.emailVerificationCode || "";
   }
   if (nodeName === "add_phone_number") {
@@ -2008,8 +2013,16 @@ function resolveSnapshotRunMode(snapshot = {}) {
   if (snapshot.runMode || snapshot.state?.runMode) {
     return normalizeRunMode(snapshot.runMode || snapshot.state?.runMode);
   }
-  if (snapshot.currentNode === "grok_register_placeholder") {
-    return RUN_MODES.grokRegister;
+  if ([
+    "grok_register_placeholder",
+    "xai_open_signup_page",
+    "xai_wait_email_verification_code",
+    "xai_fill_profile",
+    "xai_wait_registration_complete",
+    "xai_refresh_oauth_and_login",
+    "xai_submit_consent"
+  ].includes(snapshot.currentNode)) {
+    return RUN_MODES.xaiRegister;
   }
   if (["reauthorize_phone_challenge", "reauthorize_account_deleted", "reauthorize_delete_account"].includes(snapshot.currentNode)) {
     return RUN_MODES.openaiReauthorize;

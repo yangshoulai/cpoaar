@@ -19,6 +19,16 @@ export class TabController {
     this.currentTabId = null;
   }
 
+  async resetXAiSession() {
+    logger.info("清理 x.ai Cookie 并关闭相关标签页");
+    await clearCookiesForDomains(["x.ai", "accounts.x.ai"]);
+    await closeTabsByUrlPatterns([
+      "*://x.ai/*",
+      "*://*.x.ai/*"
+    ]);
+    this.currentTabId = null;
+  }
+
   async open(url) {
     const tab = await chrome.tabs.create({ url, active: true });
     this.currentTabId = tab.id;

@@ -1,5 +1,6 @@
 import { HttpClient } from "../core/http.js";
 import { getAccountProfileConfig, getProviderConfig } from "../core/config.js";
+import { getAccountTypeByMode } from "../core/runModes.js";
 import { createAccount } from "../core/account.js";
 import { SmsActivationStore } from "./smsActivationStore.js";
 import { CpaAccountService } from "./cpaAccountService.js";
@@ -16,7 +17,10 @@ export function createServices(config) {
   const activationStoreConfig = buildActivationStoreConfig(config);
   const accountManagementService = new CpaAccountService(
     getProviderConfig(config, "accountManagementService"),
-    httpClient
+    httpClient,
+    {
+      accountType: getAccountTypeByMode(config.register?.mode)
+    }
   );
 
   return {

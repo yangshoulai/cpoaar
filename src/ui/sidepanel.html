@@ -17,18 +17,11 @@
             <section class="mode-switch" aria-label="运行模式">
               <span class="mode-switch-label">模式</span>
               <div class="mode-panel">
-                <label title="邮箱注册">
-                  <input id="emailRegisterModeInput" type="radio" name="registerMode" value="openai_register">
-                  OpenAI 注册
-                </label>
-                <label title="重新授权">
-                  <input id="reauthorizeModeInput" type="radio" name="registerMode" value="openai_reauthorize">
-                  OpenAI 授权
-                </label>
-                <label title="Grok 账号注册">
-                  <input id="grokRegisterModeInput" type="radio" name="registerMode" value="grok_register">
-                  Grok 注册
-                </label>
+                <select id="registerModeSelect" class="mode-select" name="registerMode" aria-label="运行模式">
+                  <option value="openai_register">OpenAI 注册</option>
+                  <option value="openai_reauthorize">OpenAI 授权</option>
+                  <option value="xai_register">xAI 注册</option>
+                </select>
               </div>
             </section>
             <button id="themeToggleButton" class="theme-toggle" type="button" aria-label="切换主题"></button>

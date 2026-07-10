@@ -123,7 +123,7 @@ function normalizeRegisterHistoryRecord(record) {
   const flowMode = normalizeRunMode(
     source.flowMode
     || source.registerMode
-    || (source.accountType === ACCOUNT_TYPES.grok ? RUN_MODES.grokRegister : RUN_MODES.openaiRegister)
+    || (normalizeAccountType(source.accountType) === ACCOUNT_TYPES.xai ? RUN_MODES.xaiRegister : RUN_MODES.openaiRegister)
   );
   const accountType = normalizeAccountType(source.accountType || getAccountTypeByMode(flowMode));
   return {

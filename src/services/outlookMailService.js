@@ -5,6 +5,8 @@ import { clearOutlookMailAuthCache, loadOutlookMailAuthCache, saveOutlookMailAut
 const logger = createLogger("outlook-mail");
 const OPENAI_SENDER_KEYWORD = "openai.com";
 const SUBJECT_KEYWORDS = ["ChatGPT", "OpenAI"];
+const XAI_SENDER_KEYWORD = "x.ai";
+const XAI_SUBJECT_KEYWORDS = ["xai", "x.ai", "confirmation", "verification", "code", "验证码", "验证"];
 const DEFAULT_AUTH_CACHE_TTL_MINUTES = 120;
 const AUTH_CACHE_VERSION = 1;
 
@@ -333,14 +335,29 @@ export class OutlookMailEmailService {
       signal: options.signal
     });
     const messages = listPayload?.emails || [];
-    const matched = findCandidateMessage(messages, sentAfter);
+    if (options.purpose === "xai") {
+      logger.info("xAI 临时邮箱列表诊断", buildMessageListDiagnostics(emailAccount.emailAddress, messages, sentAfter, options));
+    }
+    const matched = findCandidateMessage(messages, sentAfter, options);
     if (!matched) {
+      if (options.purpose === "xai") {
+        logger.warn("xAI 临时邮箱列表未匹配到候选邮件", {
+          email: emailAccount.emailAddress,
+          sentAfter,
+          count: messages.length
+        });
+      }
       return null;
     }
     const detailPayload = await this._request(`/api/temp-emails/${encodeURIComponent(emailAccount.emailAddress)}/messages/${encodeURIComponent(matched.id)}`, {
       signal: options.signal
     });
-    return buildEmailMessage(emailAccount.emailAddress, detailPayload?.email || matched);
+    const detailMessage = detailPayload?.email || null;
+    const emailMessage = buildEmailMessage(emailAccount.emailAddress, detailMessage || matched, options);
+    if (options.purpose === "xai") {
+      logger.info("xAI 临时邮箱详情诊断", buildMessageDetailDiagnostics(emailAccount.emailAddress, matched, detailMessage, emailMessage));
+    }
+    return emailMessage;
   }
 
   async _searchOutlookEmail(emailAccount, sentAfter, options = {}) {
@@ -349,14 +366,14 @@ export class OutlookMailEmailService {
       signal: options.signal
     });
     const messages = listPayload?.emails || [];
-    const matched = findCandidateMessage(messages, sentAfter);
+    const matched = findCandidateMessage(messages, sentAfter, options);
     if (!matched) {
       return null;
     }
     const detailPayload = await this._request(`/api/email/${encodeURIComponent(emailAccount.emailAddress)}/${encodeURIComponent(matched.id)}`, {
       signal: options.signal
     });
-    return buildEmailMessage(emailAccount.emailAddress, detailPayload?.email || matched);
+    return buildEmailMessage(emailAccount.emailAddress, detailPayload?.email || matched, options);
   }
 
   async _request(path, options = {}) {
@@ -468,12 +485,73 @@ function buildCookieUrl(cookie) {
   return `${protocol}//${domain}${cookie.path || "/"}`;
 }
 
-function findCandidateMessage(messages, sentAfter) {
-  const sentAfterTime = sentAfter ? new Date(sentAfter).getTime() : 0;
-  return [...messages]
-    .filter((message) => isOpenAiMessage(message))
-    .filter((message) => parseMessageTime(message) >= sentAfterTime)
-    .sort((left, right) => parseMessageTime(right) - parseMessageTime(left))[0] || null;
+function findCandidateMessage(messages, sentAfter, options = {}) {
+  const purpose = options.purpose || "openai";
+  const sentAfterTime = normalizeToSecondPrecision(sentAfter ? new Date(sentAfter).getTime() : 0);
+  const candidates = [...messages]
+    .filter((message) => normalizeToSecondPrecision(parseMessageTime(message)) >= sentAfterTime)
+    .sort((left, right) => parseMessageTime(right) - parseMessageTime(left));
+  const matched = candidates
+    .filter((message) => purpose === "xai" ? isXAiMessage(message) : isOpenAiMessage(message))[0] || null;
+  if (matched) {
+    return matched;
+  }
+  return purpose === "xai" ? candidates[0] || null : null;
+}
+
+function buildMessageListDiagnostics(emailAddress, messages, sentAfter, options = {}) {
+  const sentAfterTime = normalizeToSecondPrecision(sentAfter ? new Date(sentAfter).getTime() : 0);
+  const purpose = options.purpose || "openai";
+  const items = [...messages]
+    .sort((left, right) => parseMessageTime(right) - parseMessageTime(left))
+    .slice(0, 5)
+    .map((message) => {
+      const messageTime = parseMessageTime(message);
+      return {
+        id: String(message.id || ""),
+        from: String(message.from || ""),
+        subject: String(message.subject || ""),
+        timestamp: message.timestamp ?? message.date ?? "",
+        messageTime: messageTime ? new Date(messageTime).toISOString() : "",
+        sentAfter,
+        afterSentAt: normalizeToSecondPrecision(messageTime) >= sentAfterTime,
+        providerMatched: purpose === "xai" ? isXAiMessage(message) : isOpenAiMessage(message)
+      };
+    });
+  return {
+    email: emailAddress,
+    purpose,
+    sentAfter,
+    sentAfterTime: sentAfterTime ? new Date(sentAfterTime).toISOString() : "",
+    count: messages.length,
+    afterSentAtCount: messages.filter((message) => normalizeToSecondPrecision(parseMessageTime(message)) >= sentAfterTime).length,
+    providerMatchedCount: messages.filter((message) => purpose === "xai" ? isXAiMessage(message) : isOpenAiMessage(message)).length,
+    items
+  };
+}
+
+function buildMessageDetailDiagnostics(emailAddress, listMessage, detailMessage, emailMessage) {
+  const rawBody = detailMessage?.body || detailMessage?.body_preview || "";
+  return {
+    email: emailAddress,
+    listMessageId: String(listMessage?.id || ""),
+    listSubject: String(listMessage?.subject || ""),
+    listFrom: String(listMessage?.from || ""),
+    detailReturned: Boolean(detailMessage),
+    detailKeys: Object.keys(detailMessage || {}).slice(0, 20),
+    detailSubject: String(detailMessage?.subject || ""),
+    detailFrom: String(detailMessage?.from || ""),
+    detailBodyLength: String(rawBody || "").length,
+    verificationCodeFound: Boolean(emailMessage?.verificationCode),
+    verificationCodeLength: String(emailMessage?.verificationCode || "").length
+  };
+}
+
+function normalizeToSecondPrecision(time) {
+  if (!time || Number.isNaN(time)) {
+    return 0;
+  }
+  return Math.floor(time / 1000) * 1000;
 }
 
 function isOpenAiMessage(message) {
@@ -481,6 +559,13 @@ function isOpenAiMessage(message) {
   const subject = String(message.subject || "");
   return sender.includes(OPENAI_SENDER_KEYWORD)
     && SUBJECT_KEYWORDS.some((keyword) => subject.includes(keyword));
+}
+
+function isXAiMessage(message) {
+  const sender = String(message.from || "").toLowerCase();
+  const subject = String(message.subject || "");
+  return sender.includes(XAI_SENDER_KEYWORD)
+    || XAI_SUBJECT_KEYWORDS.some((keyword) => subject.toLowerCase().includes(keyword.toLowerCase()));
 }
 
 function buildOutlookEmailAccount(account) {
@@ -498,9 +583,12 @@ function normalizeEmailAddress(value) {
   return String(value || "").trim().toLowerCase();
 }
 
-function buildEmailMessage(emailAddress, rawMessage) {
+function buildEmailMessage(emailAddress, rawMessage, options = {}) {
   const body = rawMessage.body || rawMessage.body_preview || "";
-  const code = extractSixDigitCode(htmlToText(body) || rawMessage.subject || "");
+  const text = `${htmlToText(body)} ${rawMessage.subject || ""}`;
+  const code = options.purpose === "xai"
+    ? extractXAiCode(text)
+    : extractSixDigitCode(text);
   return {
     emailAddress,
     sender: rawMessage.from || "",
@@ -540,4 +628,14 @@ function htmlToText(value) {
 function extractSixDigitCode(text) {
   const match = String(text || "").match(/(?<!\d)\d{6}(?!\d)/);
   return match ? match[0] : "";
+}
+
+function extractXAiCode(text) {
+  const value = String(text || "").toUpperCase();
+  const dashed = value.match(/(?<![A-Z0-9])([A-Z0-9]{3})-([A-Z0-9]{3})(?![A-Z0-9])/);
+  if (dashed) {
+    return `${dashed[1]}${dashed[2]}`;
+  }
+  const compact = value.match(/(?<![A-Z0-9])([A-Z]{2,}[A-Z0-9]{4,}|[A-Z0-9]{6})(?![A-Z0-9])/);
+  return compact ? compact[1] : "";
 }
