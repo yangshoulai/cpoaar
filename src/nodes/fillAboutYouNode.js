@@ -41,36 +41,14 @@ export class FillAboutYouNode extends RegisterNode {
     }
     logger.info("资料页提交按钮已点击", submitResult.submitResult || submitResult);
 
-    const result = await waitForAnyCondition([
-      {
-        name: "submit_error",
-        check: () => queryTextContains(ctx, "ul[class^='_errors_']", "无法创建你的帐户")
-      },
-      {
-        name: "user_already_exists",
-        check: () => queryAnyTextContains(ctx, "span", "user_already_exists")
-      },
-      {
-        name: "ready_dialog",
-        check: () => ctx.tabs.query("dialog[aria-label*='你已准备就绪']")
-      },
-      {
-        name: "chatgpt_dialog",
-        check: () => ctx.tabs.query("dialog[aria-label*='ChatGPT']")
-      },
-      {
-        name: "profile_button",
-        check: () => ctx.tabs.query("div[data-testid='accounts-profile-button']")
-      }
-    ], {
-      timeoutMs: 30000,
-      label: "资料页提交后的页面结果",
-      signal: ctx.signal
-    });
+    const result = await waitForAboutYouSubmitResult(ctx);
 
     const currentUrl = await ctx.tabs.getCurrentUrl();
     if (!result.matched) {
       return NodeResult.fail("about_you_unexpected_url", `资料页提交后未进入 ChatGPT: ${currentUrl}`, { currentUrl });
+    }
+    if (result.name === "age_confirmation_dialog_error") {
+      return NodeResult.fail("about_you_age_confirm_failed", String(result.value?.error || "出生日期确认弹框提交失败"), { currentUrl });
     }
     if (result.name === "submit_error") {
       return NodeResult.fail("account_create_failed", String(result.value), { currentUrl });
@@ -100,6 +78,122 @@ async function queryAnyTextContains(ctx, selector, expectedText) {
     const element = elements.find((item) => item.textContent.includes(text));
     return element ? element.textContent.trim() : null;
   }, [selector, expectedText]);
+}
+
+async function waitForAboutYouSubmitResult(ctx) {
+  let ageConfirmAttempts = 0;
+  while (true) {
+    const result = await waitForAnyCondition([
+      {
+        name: "submit_error",
+        check: () => queryTextContains(ctx, "ul[class^='_errors_']", "无法创建你的帐户")
+      },
+      {
+        name: "user_already_exists",
+        check: () => queryAnyTextContains(ctx, "span", "user_already_exists")
+      },
+      {
+        name: "age_confirmation_dialog",
+        check: () => findAgeConfirmationDialog(ctx)
+      },
+      {
+        name: "ready_dialog",
+        check: () => ctx.tabs.query("dialog[aria-label*='你已准备就绪']")
+      },
+      {
+        name: "chatgpt_dialog",
+        check: () => ctx.tabs.query("dialog[aria-label*='ChatGPT']")
+      },
+      {
+        name: "profile_button",
+        check: () => ctx.tabs.query("div[data-testid='accounts-profile-button']")
+      }
+    ], {
+      timeoutMs: 30000,
+      label: "资料页提交后的页面结果",
+      signal: ctx.signal
+    });
+
+    if (!result.matched || result.name !== "age_confirmation_dialog") {
+      return result;
+    }
+    ageConfirmAttempts += 1;
+    if (ageConfirmAttempts > 2) {
+      return {
+        matched: true,
+        name: "age_confirmation_dialog_error",
+        value: { error: "出生日期确认弹框重复出现" }
+      };
+    }
+    const clickResult = await clickAgeConfirmationDialog(ctx);
+    if (!clickResult?.ok) {
+      return {
+        matched: true,
+        name: "age_confirmation_dialog_error",
+        value: clickResult
+      };
+    }
+    logger.info("出生日期确认弹框已提交", clickResult);
+  }
+}
+
+async function findAgeConfirmationDialog(ctx) {
+  return ctx.tabs.execute(() => {
+    const dialog = findVisibleAgeDialogBody();
+    if (!dialog) {
+      return null;
+    }
+    const submit = dialog.querySelector("input[type='submit']");
+    return {
+      className: dialog.className || "",
+      text: dialog.textContent.trim(),
+      hasSubmit: Boolean(submit)
+    };
+
+    function findVisibleAgeDialogBody() {
+      const elements = Array.from(document.querySelectorAll("div[class^='_ageDialogBody'], div[class*='_ageDialogBody']"));
+      return elements.find((item) => {
+        const style = window.getComputedStyle(item);
+        return style.visibility !== "hidden"
+          && style.display !== "none"
+          && item.getClientRects().length > 0;
+      }) || null;
+    }
+  });
+}
+
+async function clickAgeConfirmationDialog(ctx) {
+  return ctx.tabs.execute(() => {
+    const dialog = findVisibleAgeDialogBody();
+    if (!dialog) {
+      return { ok: false, error: "未找到出生日期确认弹框" };
+    }
+    const submit = dialog.querySelector("input[type='submit']");
+    if (!submit) {
+      return { ok: false, error: "出生日期确认弹框内未找到提交按钮" };
+    }
+    if (submit.disabled || submit.getAttribute("aria-disabled") === "true") {
+      return { ok: false, error: "出生日期确认弹框提交按钮不可用" };
+    }
+    submit.scrollIntoView({ block: "center", inline: "center" });
+    submit.click();
+    return {
+      ok: true,
+      className: dialog.className || "",
+      buttonValue: submit.value || "",
+      buttonText: submit.textContent?.trim?.() || ""
+    };
+
+    function findVisibleAgeDialogBody() {
+      const elements = Array.from(document.querySelectorAll("div[class^='_ageDialogBody'], div[class*='_ageDialogBody']"));
+      return elements.find((item) => {
+        const style = window.getComputedStyle(item);
+        return style.visibility !== "hidden"
+          && style.display !== "none"
+          && item.getClientRects().length > 0;
+      }) || null;
+    }
+  });
 }
 
 async function findClickableSubmitButton(ctx) {
