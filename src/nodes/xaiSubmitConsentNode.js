@@ -2,7 +2,7 @@ import { RegisterNode, NodeResult } from "../core/flow.js";
 import { sleep, waitForAnyCondition } from "../core/browser.js";
 import { createLogger } from "../core/logger.js";
 import { appendRegisterHistory } from "../core/storage.js";
-import { ACCOUNT_TYPES, RUN_MODES } from "../core/runModes.js";
+import { ACCOUNT_TYPES, RUN_MODES, isXAiRegisterMode, isXAiReauthorizeMode } from "../core/runModes.js";
 import {
   buildXAiRedirectUrl,
   clickVisibleButtonByText,
@@ -61,6 +61,8 @@ export class XAiSubmitConsentNode extends RegisterNode {
     if (!clickResult.ok) {
       return NodeResult.fail("xai_oauth_allow_failed", "未能点击 xAI device OAuth 允许按钮");
     }
+    const allowSubmittedAt = new Date().toISOString();
+    ctx.state.xaiOauthAllowSubmittedAt = allowSubmittedAt;
 
     const doneResult = await waitForAnyCondition([
       {
@@ -79,7 +81,8 @@ export class XAiSubmitConsentNode extends RegisterNode {
     let patchResult;
     try {
       patchResult = await ctx.services.accountManagementService.patchXAiAuthFile({
-        emailAddress: ctx.state.account?.emailAddress || ""
+        emailAddress: ctx.state.account?.emailAddress || "",
+        minLastRefreshAt: getRequiredMinLastRefreshAt(ctx, allowSubmittedAt)
       });
     } catch (error) {
       return NodeResult.fail("xai_account_export_failed", `CPA xAI device 认证文件修补失败：${formatServiceError(error)}`, {
@@ -115,6 +118,7 @@ export class XAiSubmitConsentNode extends RegisterNode {
     return NodeResult.ok(XAiSubmitConsentNode.statuses.success, {
       xaiOauthFlow: "device",
       xaiOauthDeviceUserCode: resolveDeviceUserCode(ctx.state.xaiOauthUrl),
+      xaiOauthAllowSubmittedAt: allowSubmittedAt,
       accountExportSubmitResult: submitResult
     });
   }
@@ -156,6 +160,8 @@ export class XAiSubmitConsentNode extends RegisterNode {
     if (!clickResult.ok) {
       return NodeResult.fail("xai_oauth_allow_failed", "未能点击 xAI OAuth 允许按钮");
     }
+    const allowSubmittedAt = new Date().toISOString();
+    ctx.state.xaiOauthAllowSubmittedAt = allowSubmittedAt;
 
     const codeResult = await waitForAnyCondition([
       {
@@ -182,7 +188,8 @@ export class XAiSubmitConsentNode extends RegisterNode {
     const redirectUrl = buildXAiRedirectUrl(authorizationCode, oauthState);
     const submitResult = await ctx.services.accountManagementService.submitRedirectUrl(redirectUrl, {
       accountType: ACCOUNT_TYPES.xai,
-      emailAddress: ctx.state.account?.emailAddress || ""
+      emailAddress: ctx.state.account?.emailAddress || "",
+      minLastRefreshAt: getRequiredMinLastRefreshAt(ctx, allowSubmittedAt)
     });
     if (!submitResult.success) {
       return NodeResult.fail("xai_account_export_failed", submitResult.error || `xAI 账号导出失败: ${submitResult.status}`, {
@@ -211,6 +218,7 @@ export class XAiSubmitConsentNode extends RegisterNode {
       xaiAuthorizationCode: authorizationCode,
       xaiOauthState: oauthState,
       xaiOauthRedirectUrl: redirectUrl,
+      xaiOauthAllowSubmittedAt: allowSubmittedAt,
       accountExportSubmitResult: submitResult
     });
   }
@@ -407,34 +415,42 @@ async function finalizeXAiAccountExport(ctx, {
   submitResult
 }) {
   await ctx.services.emailService.callback(ctx.state.emailAccount, true);
-  await appendRegisterHistory({
-    accountType: ACCOUNT_TYPES.xai,
-    flowMode: RUN_MODES.xaiRegister,
-    emailAddress: ctx.state.account?.emailAddress || "",
-    mobile: "",
-    smsProvider: "",
-    activationId: "",
-    name: ctx.state.account?.name || "",
-    firstName: ctx.state.account?.firstName || "",
-    lastName: ctx.state.account?.lastName || "",
-    age: ctx.state.account?.age || "",
-    birthDate: ctx.state.account?.birthDate?.value || "",
-    password: ctx.state.account?.password || "",
-    emailProvider: "outlook_mail",
-    emailMode: resolveEmailMode(ctx.state.emailAccount),
-    emailAccount: ctx.state.emailAccount || null,
-    outlookAccountId: ctx.state.emailAccount?.attributes?.accountId || "",
-    emailVerificationCode: ctx.state.account?.emailVerificationCode || "",
-    smsVerificationCode: "",
-    xaiOauthFlow: oauthFlow || "",
-    xaiOauthDeviceUserCode: deviceUserCode || "",
-    xaiAuthorizationCode: authorizationCode || "",
-    xaiOauthState: oauthState || "",
-    xaiOauthRedirectUrl: redirectUrl || "",
-    accountExportStatus: submitResult.status,
-    accountExportResult: submitResult.attributes || {},
-    xaiAuthFilePatchResult: submitResult.xaiAuthFilePatchResult || null
-  });
+  if (isXAiRegisterMode(ctx.config.register?.mode)) {
+    await appendRegisterHistory({
+      accountType: ACCOUNT_TYPES.xai,
+      flowMode: RUN_MODES.xaiRegister,
+      emailAddress: ctx.state.account?.emailAddress || "",
+      mobile: "",
+      smsProvider: "",
+      activationId: "",
+      name: ctx.state.account?.name || "",
+      firstName: ctx.state.account?.firstName || "",
+      lastName: ctx.state.account?.lastName || "",
+      age: ctx.state.account?.age || "",
+      birthDate: ctx.state.account?.birthDate?.value || "",
+      password: ctx.state.account?.password || "",
+      emailProvider: "outlook_mail",
+      emailMode: resolveEmailMode(ctx.state.emailAccount),
+      emailAccount: ctx.state.emailAccount || null,
+      outlookAccountId: ctx.state.emailAccount?.attributes?.accountId || "",
+      emailVerificationCode: ctx.state.account?.emailVerificationCode || "",
+      smsVerificationCode: "",
+      xaiOauthFlow: oauthFlow || "",
+      xaiOauthDeviceUserCode: deviceUserCode || "",
+      xaiAuthorizationCode: authorizationCode || "",
+      xaiOauthState: oauthState || "",
+      xaiOauthRedirectUrl: redirectUrl || "",
+      accountExportStatus: submitResult.status,
+      accountExportResult: submitResult.attributes || {},
+      xaiAuthFilePatchResult: submitResult.xaiAuthFilePatchResult || null
+    });
+  }
+}
+
+function getRequiredMinLastRefreshAt(ctx, allowSubmittedAt) {
+  return isXAiReauthorizeMode(ctx.config.register?.mode)
+    ? allowSubmittedAt
+    : "";
 }
 
 function isDeviceOauthFlow(ctx) {

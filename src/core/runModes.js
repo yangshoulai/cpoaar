@@ -1,7 +1,8 @@
 export const RUN_MODES = Object.freeze({
   openaiRegister: "openai_register",
   openaiReauthorize: "openai_reauthorize",
-  xaiRegister: "xai_register"
+  xaiRegister: "xai_register",
+  xaiReauthorize: "xai_reauthorize"
 });
 
 export const ACCOUNT_TYPES = Object.freeze({
@@ -12,7 +13,8 @@ export const ACCOUNT_TYPES = Object.freeze({
 const LEGACY_RUN_MODE_MAP = Object.freeze({
   email_register: RUN_MODES.openaiRegister,
   reauthorize: RUN_MODES.openaiReauthorize,
-  grok_register: RUN_MODES.xaiRegister
+  grok_register: RUN_MODES.xaiRegister,
+  grok_reauthorize: RUN_MODES.xaiReauthorize
 });
 
 const RUN_MODE_META = Object.freeze({
@@ -30,6 +32,11 @@ const RUN_MODE_META = Object.freeze({
     label: "xAI 注册",
     accountType: ACCOUNT_TYPES.xai,
     configGroups: ["accountProfile", "httpService", "emailService", "accountManagementService", "register"]
+  },
+  [RUN_MODES.xaiReauthorize]: {
+    label: "xAI 授权",
+    accountType: ACCOUNT_TYPES.xai,
+    configGroups: ["accountProfile", "httpService", "emailService", "accountManagementService"]
   }
 });
 
@@ -73,6 +80,10 @@ export function isOpenAiMode(mode) {
   return getAccountTypeByMode(mode) === ACCOUNT_TYPES.openai;
 }
 
+export function isXAiMode(mode) {
+  return getAccountTypeByMode(mode) === ACCOUNT_TYPES.xai;
+}
+
 export function isOpenAiRegisterMode(mode) {
   return normalizeRunMode(mode) === RUN_MODES.openaiRegister;
 }
@@ -83,4 +94,14 @@ export function isOpenAiReauthorizeMode(mode) {
 
 export function isXAiRegisterMode(mode) {
   return normalizeRunMode(mode) === RUN_MODES.xaiRegister;
+}
+
+export function isXAiReauthorizeMode(mode) {
+  return normalizeRunMode(mode) === RUN_MODES.xaiReauthorize;
+}
+
+export function isReauthorizeMode(mode) {
+  const normalized = normalizeRunMode(mode);
+  return normalized === RUN_MODES.openaiReauthorize
+    || normalized === RUN_MODES.xaiReauthorize;
 }

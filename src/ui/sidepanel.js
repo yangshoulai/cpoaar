@@ -9,7 +9,7 @@ import {
   getRunModeConfigGroups,
   getRunModeLabel,
   isOpenAiRegisterMode,
-  isOpenAiReauthorizeMode,
+  isReauthorizeMode,
   normalizeRunMode
 } from "../core/runModes.js";
 import { createLogger } from "../core/logger.js";
@@ -201,6 +201,15 @@ const RESULT_STATUS_LABELS = {
   xai_profile_submitted: "xAI 资料已提交",
   xai_turnstile_timeout: "xAI Turnstile 超时",
   xai_registration_completed: "xAI 注册完成",
+  xai_sign_in_completed: "xAI 登录完成",
+  xai_sign_in_account_missing: "缺少 xAI 授权邮箱",
+  xai_sign_in_email_input_missing: "缺少 xAI 邮箱输入框",
+  xai_sign_in_next_submit_failed: "xAI 下一步失败",
+  xai_sign_in_password_missing: "缺少 xAI 登录密码",
+  xai_sign_in_password_input_missing: "缺少 xAI 密码输入框",
+  xai_sign_in_login_submit_failed: "xAI 登录提交失败",
+  xai_sign_in_turnstile_timeout: "xAI 登录 Turnstile 超时",
+  xai_sign_in_failed: "xAI 登录失败",
   xai_oauth_consent_ready: "xAI OAuth Consent 已就绪",
   xai_oauth_device_continue_failed: "xAI Device 继续失败",
   xai_oauth_device_done_missing: "xAI Device 完成页缺失",
@@ -327,7 +336,7 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
 function bindEvents() {
   dom.registerModeSelect.addEventListener("change", () => updateRegisterMode(dom.registerModeSelect.value));
   dom.reauthorizeEmailInput.addEventListener("input", () => {
-    if (isOpenAiReauthorizeMode(getRegisterMode())) {
+    if (isReauthorizeMode(getRegisterMode())) {
       showConfigMessage("");
     }
   });
@@ -355,7 +364,7 @@ function bindEvents() {
 }
 
 async function startFresh() {
-  if (isOpenAiReauthorizeMode(getRegisterMode())) {
+  if (isReauthorizeMode(getRegisterMode())) {
     await startManualReauthorize();
     return;
   }
@@ -492,7 +501,13 @@ async function startManualReauthorize() {
     return;
   }
 
-  const initialState = await buildManualReauthorizeState(emailAddress);
+  let initialState;
+  try {
+    initialState = await buildManualReauthorizeState(emailAddress);
+  } catch (error) {
+    showConfigMessage(error.message, true);
+    return;
+  }
   await runReauthorizeFlow(initialState, {
     email: emailAddress,
     emailMode: initialState.historyRecord?.emailMode || resolveManualEmailMode(),
@@ -693,7 +708,7 @@ function filterHistory(history) {
 function renderHistoryAction(record) {
   const actions = document.createElement("span");
   actions.className = "table-actions";
-  if (isOpenAiReauthorizeMode(getRegisterMode())) {
+  if (isReauthorizeMode(getRegisterMode())) {
     const reauthorizeButton = document.createElement("button");
     reauthorizeButton.type = "button";
     reauthorizeButton.className = "table-action primary";
@@ -838,17 +853,21 @@ async function startReauthorize(record) {
     showConfigMessage("流程正在运行，不能启动重新授权", true);
     return;
   }
-  if (!record.emailAccount) {
-    showConfigMessage("该历史记录缺少邮箱账号详情，无法重新授权", true);
-    return;
-  }
   const errors = validateConfig(appConfig);
   if (errors.length) {
     showConfigMessage(errors.join("；"), true);
     return;
   }
 
-  await runReauthorizeFlow(buildReauthorizeState(record), {
+  let initialState;
+  try {
+    initialState = await buildReauthorizeState(record);
+  } catch (error) {
+    showConfigMessage(error.message, true);
+    return;
+  }
+
+  await runReauthorizeFlow(initialState, {
     email: record.emailAddress,
     emailMode: record.emailMode,
     source: "history"
@@ -856,7 +875,12 @@ async function startReauthorize(record) {
 }
 
 async function runReauthorizeFlow(initialState, logData = {}) {
-  setConfigValue(appConfig, "register.mode", RUN_MODES.openaiReauthorize);
+  const targetMode = normalizeRunMode(logData.mode || initialState.runMode || getRegisterMode());
+  if (!isReauthorizeMode(targetMode)) {
+    showConfigMessage("当前模式不是授权模式，不能启动重新授权流程", true);
+    return;
+  }
+  setConfigValue(appConfig, "register.mode", targetMode);
   await saveConfig(appConfig);
   rebuildFlowForMode();
   await clearSnapshot();
@@ -872,7 +896,9 @@ async function runReauthorizeFlow(initialState, logData = {}) {
   logger.info("开始重新授权流程", {
     email: logData.email || initialState.account?.emailAddress || "",
     emailMode: logData.emailMode || initialState.emailAccount?.attributes?.mode || "",
-    source: logData.source || ""
+    source: logData.source || "",
+    mode: targetMode,
+    label: getRunModeLabel(targetMode)
   });
   try {
     await currentRunner.run();
@@ -887,7 +913,10 @@ async function buildManualReauthorizeState(emailAddress) {
   const emailAccount = await buildManualEmailAccount(emailAddress);
   const normalizedEmailAddress = emailAccount.emailAddress || emailAddress;
   const historyRecord = buildManualHistoryRecord(normalizedEmailAddress, emailAccount);
+  const password = resolveReauthorizePassword(historyRecord);
+  ensureXAiReauthorizePassword(password);
   return {
+    runMode: getRegisterMode(),
     historyRecord,
     emailAccount,
     account: {
@@ -895,23 +924,28 @@ async function buildManualReauthorizeState(emailAddress) {
       mobile: "",
       name: "",
       age: "",
-      password: "",
+      password,
       emailVerificationCode: "",
       smsVerificationCode: ""
     }
   };
 }
 
-function buildReauthorizeState(record) {
+async function buildReauthorizeState(record) {
+  const emailAddress = record.emailAddress || record.emailAccount?.emailAddress || "";
+  const emailAccount = record.emailAccount || await buildManualEmailAccount(emailAddress);
+  const password = resolveReauthorizePassword(record);
+  ensureXAiReauthorizePassword(password);
   return {
+    runMode: getRegisterMode(),
     historyRecord: record,
-    emailAccount: record.emailAccount,
+    emailAccount,
     account: {
-      emailAddress: record.emailAddress || record.emailAccount?.emailAddress || "",
+      emailAddress: emailAddress || emailAccount?.emailAddress || "",
       mobile: String(record.mobile || "").replace(/^\+/, ""),
       name: record.name || "",
       age: record.age || "",
-      password: record.password || "",
+      password,
       emailVerificationCode: "",
       smsVerificationCode: ""
     }
@@ -949,9 +983,10 @@ async function buildManualEmailAccount(emailAddress) {
 }
 
 function buildManualHistoryRecord(emailAddress, emailAccount) {
+  const flowMode = getRegisterMode();
   return {
-    accountType: getAccountTypeByMode(RUN_MODES.openaiReauthorize),
-    flowMode: RUN_MODES.openaiReauthorize,
+    accountType: getAccountTypeByMode(flowMode),
+    flowMode,
     emailAddress,
     emailMode: emailAccount.attributes?.mode === "temp" ? "temp" : "outlook_pool",
     emailAccount,
@@ -961,8 +996,22 @@ function buildManualHistoryRecord(emailAddress, emailAccount) {
     name: "",
     age: "",
     birthDate: "",
-    password: ""
+    password: resolveConfiguredPasswordForCurrentAccountType()
   };
+}
+
+function resolveReauthorizePassword(record = {}) {
+  return String(record.password || resolveConfiguredPasswordForCurrentAccountType() || "").trim();
+}
+
+function resolveConfiguredPasswordForCurrentAccountType() {
+  return String(getConfigValue(appConfig, `${getActiveAccountProfilePath()}.specifiedPassword`) || "").trim();
+}
+
+function ensureXAiReauthorizePassword(password) {
+  if (getCurrentAccountType() === "xai" && !String(password || "").trim()) {
+    throw new Error("缺少 xAI 登录密码：请选择带密码的历史记录，或在 xAI 账号配置中设置固定密码");
+  }
 }
 
 function resolveManualEmailMode() {
@@ -1116,11 +1165,11 @@ function renderAll() {
 function renderModeSwitch() {
   const mode = getRegisterMode();
   const isRunning = isFlowBusy();
-  const isReauthorizeMode = isOpenAiReauthorizeMode(mode);
+  const isCurrentReauthorizeMode = isReauthorizeMode(mode);
   dom.registerModeSelect.value = mode;
   dom.registerModeSelect.disabled = isRunning;
-  dom.reauthorizeManualPanel.hidden = !isReauthorizeMode;
-  dom.reauthorizeEmailInput.disabled = isRunning || !isReauthorizeMode;
+  dom.reauthorizeManualPanel.hidden = !isCurrentReauthorizeMode;
+  dom.reauthorizeEmailInput.disabled = isRunning || !isCurrentReauthorizeMode;
 }
 
 async function updateRegisterMode(mode) {
@@ -2220,6 +2269,9 @@ function resolveSnapshotRunMode(snapshot = {}) {
     "xai_submit_consent"
   ].includes(snapshot.currentNode)) {
     return RUN_MODES.xaiRegister;
+  }
+  if (snapshot.currentNode === "xai_sign_in") {
+    return RUN_MODES.xaiReauthorize;
   }
   if (["reauthorize_phone_challenge", "reauthorize_account_deleted", "reauthorize_delete_account"].includes(snapshot.currentNode)) {
     return RUN_MODES.openaiReauthorize;

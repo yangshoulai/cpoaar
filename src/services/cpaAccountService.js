@@ -69,7 +69,8 @@ export class CpaAccountService {
 
     try {
       const patchResult = await this.patchXAiAuthFile({
-        emailAddress: options.emailAddress || options.email || ""
+        emailAddress: options.emailAddress || options.email || "",
+        minLastRefreshAt: options.minLastRefreshAt || ""
       });
       return {
         ...result,
@@ -94,14 +95,15 @@ export class CpaAccountService {
     }
   }
 
-  async patchXAiAuthFile({ emailAddress } = {}) {
+  async patchXAiAuthFile({ emailAddress, minLastRefreshAt = "" } = {}) {
     const fileName = buildXAiAuthFileName(emailAddress);
     const downloadUrl = joinUrl(this.config.baseUrl, "auth-files/download");
     logger.info("下载 CPA xAI 认证文件", {
       url: downloadUrl,
-      fileName
+      fileName,
+      minLastRefreshAt
     });
-    const authFile = await this.downloadAuthFile(downloadUrl, fileName);
+    const authFile = await this.downloadAuthFile(downloadUrl, fileName, { minLastRefreshAt });
     const patchedAuthFile = patchXAiAuthFileContent(authFile);
     const uploadUrl = joinUrl(this.config.baseUrl, "auth-files");
     logger.info("上传 CPA xAI 认证文件", {
@@ -121,19 +123,22 @@ export class CpaAccountService {
       success: true,
       status: uploadPayload?.status || "ok",
       fileName,
+      lastRefresh: authFile.last_refresh || "",
       baseUrl: patchedAuthFile.base_url,
       headerKeys: Object.keys(patchedAuthFile.headers || {}),
       attributes: uploadPayload || {}
     };
   }
 
-  async downloadAuthFile(url, fileName) {
+  async downloadAuthFile(url, fileName, options = {}) {
+    const minLastRefreshAt = normalizeDateToSecond(options.minLastRefreshAt);
     for (let attempt = 1; attempt <= XAI_AUTH_FILE_DOWNLOAD_MAX_ATTEMPTS; attempt += 1) {
       try {
         logger.info("查询 CPA xAI 认证文件", {
           fileName,
           attempt,
-          maxAttempts: XAI_AUTH_FILE_DOWNLOAD_MAX_ATTEMPTS
+          maxAttempts: XAI_AUTH_FILE_DOWNLOAD_MAX_ATTEMPTS,
+          minLastRefreshAt
         });
         const text = await this.http.get(url, {
           query: { name: fileName },
@@ -141,7 +146,24 @@ export class CpaAccountService {
           credentials: "omit",
           responseType: "text"
         });
-        return parseRequiredJson(text, `CPA xAI 认证文件 ${fileName}`);
+        const authFile = parseRequiredJson(text, `CPA xAI 认证文件 ${fileName}`);
+        if (minLastRefreshAt && !isAuthFileFreshEnough(authFile, minLastRefreshAt)) {
+          const shouldRetry = attempt < XAI_AUTH_FILE_DOWNLOAD_MAX_ATTEMPTS;
+          logger.info("CPA xAI 认证文件 last_refresh 早于本次授权，等待新文件", {
+            fileName,
+            attempt,
+            maxAttempts: XAI_AUTH_FILE_DOWNLOAD_MAX_ATTEMPTS,
+            retryIntervalMs: XAI_AUTH_FILE_DOWNLOAD_RETRY_INTERVAL_MS,
+            lastRefresh: authFile?.last_refresh || "",
+            minLastRefreshAt
+          });
+          if (!shouldRetry) {
+            throw new Error(`CPA xAI 认证文件 last_refresh 早于本次授权: last_refresh=${authFile?.last_refresh || ""}, min=${minLastRefreshAt}`);
+          }
+          await delay(XAI_AUTH_FILE_DOWNLOAD_RETRY_INTERVAL_MS);
+          continue;
+        }
+        return authFile;
       } catch (error) {
         const shouldRetry = isHttpStatus(error, 404) && attempt < XAI_AUTH_FILE_DOWNLOAD_MAX_ATTEMPTS;
         if (!shouldRetry) {
@@ -176,9 +198,12 @@ export class CpaAccountService {
     if (!emailAddress) {
       throw new Error("CPA 账号删除失败：缺少邮箱地址");
     }
-    const fileName = buildCodexAuthFileName(emailAddress);
+    const accountType = normalizeAccountType(record?.accountType || this.accountType);
+    const fileName = accountType === ACCOUNT_TYPES.xai
+      ? buildXAiAuthFileName(emailAddress)
+      : buildCodexAuthFileName(emailAddress);
     const url = joinUrl(this.config.baseUrl, "auth-files");
-    logger.info("删除 CPA Codex 认证文件", {
+    logger.info(accountType === ACCOUNT_TYPES.xai ? "删除 CPA xAI 认证文件" : "删除 CPA Codex 认证文件", {
       url,
       email: emailAddress,
       fileName
@@ -239,6 +264,23 @@ function patchXAiAuthFileContent(authFile) {
     base_url: XAI_AUTH_FILE_BASE_URL,
     headers: mergeXAiAuthHeaders(authFile.headers)
   };
+}
+
+function isAuthFileFreshEnough(authFile, minLastRefreshAt) {
+  const lastRefreshTime = normalizeDateToSecond(authFile?.last_refresh);
+  const minTime = normalizeDateToSecond(minLastRefreshAt);
+  return Boolean(lastRefreshTime && minTime && lastRefreshTime >= minTime);
+}
+
+function normalizeDateToSecond(value) {
+  if (!value) {
+    return "";
+  }
+  const time = new Date(value).getTime();
+  if (!Number.isFinite(time)) {
+    return "";
+  }
+  return new Date(Math.floor(time / 1000) * 1000).toISOString();
 }
 
 function mergeXAiAuthHeaders(headers) {

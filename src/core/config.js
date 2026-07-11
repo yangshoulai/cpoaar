@@ -1,4 +1,4 @@
-import { ACCOUNT_TYPES, RUN_MODES, getAccountTypeByMode, isOpenAiRegisterMode, normalizeRunMode } from "./runModes.js";
+import { ACCOUNT_TYPES, RUN_MODES, getAccountTypeByMode, isOpenAiRegisterMode, isReauthorizeMode, normalizeRunMode } from "./runModes.js";
 
 const DEFAULT_ACCOUNT_PROFILE = Object.freeze({
   randomPassword: true,
@@ -151,7 +151,7 @@ export function validateConfig(config) {
   if (!accountConfig.secretKey) {
     errors.push("CPA secretKey 不能为空");
   }
-  if (runMode !== RUN_MODES.openaiReauthorize && (!Number.isInteger(batchCount) || batchCount < 1)) {
+  if (!isReauthorizeMode(runMode) && (!Number.isInteger(batchCount) || batchCount < 1)) {
     errors.push("批量注册数量必须是大于等于 1 的整数");
   }
   if (isOpenAiRegisterMode(runMode) && normalized.smsService.provider) {

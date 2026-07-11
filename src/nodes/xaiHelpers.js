@@ -1,4 +1,5 @@
 export const XAI_SIGN_UP_URL = "https://accounts.x.ai/sign-up";
+export const XAI_SIGN_IN_URL = "https://accounts.x.ai/sign-in?email=true";
 export const XAI_CALLBACK_URL_PREFIX = "http://127.0.0.1:56121/callback";
 
 export function normalizeXAiVerificationCode(value) {

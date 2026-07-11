@@ -18,7 +18,8 @@ import { XAiFillProfileNode } from "../nodes/xaiFillProfileNode.js";
 import { XAiWaitRegistrationCompleteNode } from "../nodes/xaiWaitRegistrationCompleteNode.js";
 import { XAiRefreshOAuthAndLoginNode } from "../nodes/xaiRefreshOAuthAndLoginNode.js";
 import { XAiSubmitConsentNode } from "../nodes/xaiSubmitConsentNode.js";
-import { RUN_MODES, isXAiRegisterMode, isOpenAiReauthorizeMode, normalizeRunMode } from "../core/runModes.js";
+import { XAiSignInNode } from "../nodes/xaiSignInNode.js";
+import { RUN_MODES, isXAiRegisterMode, isXAiReauthorizeMode, isOpenAiReauthorizeMode, normalizeRunMode } from "../core/runModes.js";
 
 export function buildRegisterFlow(mode = RUN_MODES.openaiRegister) {
   const runMode = normalizeRunMode(mode);
@@ -27,6 +28,9 @@ export function buildRegisterFlow(mode = RUN_MODES.openaiRegister) {
   }
   if (isXAiRegisterMode(runMode)) {
     return buildXAiRegisterFlow();
+  }
+  if (isXAiReauthorizeMode(runMode)) {
+    return buildXAiReauthorizeFlow();
   }
   return buildEmailRegisterFlow();
 }
@@ -168,6 +172,30 @@ function buildXAiRegisterFlow() {
   });
 }
 
+function buildXAiReauthorizeFlow() {
+  const nodes = [
+    new StartupInitializeNode(),
+    new XAiSignInNode(),
+    new XAiRefreshOAuthAndLoginNode(),
+    new XAiSubmitConsentNode()
+  ];
+  return new RegisterFlow({
+    startNode: StartupInitializeNode.name,
+    nodes: Object.fromEntries(nodes.map((node) => [node.name, node])),
+    transitions: {
+      [StartupInitializeNode.name]: [
+        { status: StartupInitializeNode.statuses.success, target: XAiSignInNode.name }
+      ],
+      [XAiSignInNode.name]: [
+        { status: XAiSignInNode.statuses.success, target: XAiRefreshOAuthAndLoginNode.name }
+      ],
+      [XAiRefreshOAuthAndLoginNode.name]: [
+        { status: XAiRefreshOAuthAndLoginNode.statuses.consent, target: XAiSubmitConsentNode.name }
+      ]
+    }
+  });
+}
+
 export function getNodeOrder(mode = RUN_MODES.openaiRegister) {
   const runMode = normalizeRunMode(mode);
   if (isOpenAiReauthorizeMode(runMode)) {
@@ -184,6 +212,9 @@ export function getNodeOrder(mode = RUN_MODES.openaiRegister) {
   if (isXAiRegisterMode(runMode)) {
     return XAI_REGISTER_NODE_ORDER;
   }
+  if (isXAiReauthorizeMode(runMode)) {
+    return XAI_REAUTHORIZE_NODE_ORDER;
+  }
   return EMAIL_REGISTER_NODE_ORDER;
 }
 
@@ -193,6 +224,8 @@ export function getManualRetryPolicy(mode = RUN_MODES.openaiRegister, nodeName) 
     ? REAUTHORIZE_MANUAL_RETRY_POLICIES
     : isXAiRegisterMode(runMode)
       ? XAI_REGISTER_MANUAL_RETRY_POLICIES
+      : isXAiReauthorizeMode(runMode)
+        ? XAI_REAUTHORIZE_MANUAL_RETRY_POLICIES
       : EMAIL_REGISTER_MANUAL_RETRY_POLICIES;
   return policies[nodeName] || {
     retryable: false,
@@ -219,6 +252,13 @@ export const XAI_REGISTER_NODE_ORDER = [
   XAiWaitEmailVerificationCodeNode.name,
   XAiFillProfileNode.name,
   XAiWaitRegistrationCompleteNode.name,
+  XAiRefreshOAuthAndLoginNode.name,
+  XAiSubmitConsentNode.name
+];
+
+export const XAI_REAUTHORIZE_NODE_ORDER = [
+  StartupInitializeNode.name,
+  XAiSignInNode.name,
   XAiRefreshOAuthAndLoginNode.name,
   XAiSubmitConsentNode.name
 ];
@@ -278,6 +318,13 @@ const XAI_REGISTER_MANUAL_RETRY_POLICIES = Object.freeze({
   [XAiWaitEmailVerificationCodeNode.name]: retryFromNode(XAiOpenSignupPageNode.name),
   [XAiFillProfileNode.name]: retryFromNode(XAiOpenSignupPageNode.name),
   [XAiWaitRegistrationCompleteNode.name]: RETRY_REFRESH,
+  [XAiRefreshOAuthAndLoginNode.name]: RETRY_DIRECT,
+  [XAiSubmitConsentNode.name]: retryFromNode(XAiRefreshOAuthAndLoginNode.name)
+});
+
+const XAI_REAUTHORIZE_MANUAL_RETRY_POLICIES = Object.freeze({
+  [StartupInitializeNode.name]: RETRY_DIRECT,
+  [XAiSignInNode.name]: retryFromNode(XAiSignInNode.name),
   [XAiRefreshOAuthAndLoginNode.name]: RETRY_DIRECT,
   [XAiSubmitConsentNode.name]: retryFromNode(XAiRefreshOAuthAndLoginNode.name)
 });
