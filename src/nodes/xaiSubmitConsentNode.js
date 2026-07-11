@@ -1,5 +1,5 @@
 import { RegisterNode, NodeResult } from "../core/flow.js";
-import { waitForAnyCondition } from "../core/browser.js";
+import { sleep, waitForAnyCondition } from "../core/browser.js";
 import { createLogger } from "../core/logger.js";
 import { appendRegisterHistory } from "../core/storage.js";
 import { ACCOUNT_TYPES, RUN_MODES } from "../core/runModes.js";
@@ -46,6 +46,15 @@ export class XAiSubmitConsentNode extends RegisterNode {
     });
     if (!consentReady.matched) {
       return NodeResult.fail("xai_oauth_consent_missing", `未找到 xAI device OAuth consent 页面或允许按钮: ${await ctx.tabs.getCurrentUrl()}`);
+    }
+
+    logger.info("xAI device consent 已就绪，提交前等待页面稳定", {
+      waitMs: 2000,
+      currentUrl: await ctx.tabs.getCurrentUrl()
+    });
+    await sleep(2000, ctx.signal);
+    if (ctx.signal?.aborted) {
+      return NodeResult.fail("stopped", "流程已停止");
     }
 
     const clickResult = await approveDeviceConsent(ctx);

@@ -1,10 +1,12 @@
 import { RegisterNode, NodeResult } from "../core/flow.js";
-import { waitForAnyCondition } from "../core/browser.js";
+import { sleep, waitForAnyCondition } from "../core/browser.js";
 import { createLogger } from "../core/logger.js";
 import { ACCOUNT_TYPES } from "../core/runModes.js";
 import { clickVisibleButtonByText, findVisibleButtonByText } from "./xaiHelpers.js";
 
 const logger = createLogger("node.xai-oauth");
+const XAI_OAUTH_RATE_LIMIT_MAX_ATTEMPTS = 3;
+const XAI_OAUTH_RATE_LIMIT_RETRY_DELAY_MS = 60000;
 
 export class XAiRefreshOAuthAndLoginNode extends RegisterNode {
   static name = "xai_refresh_oauth_and_login";
@@ -17,6 +19,29 @@ export class XAiRefreshOAuthAndLoginNode extends RegisterNode {
   }
 
   async execute(ctx) {
+    for (let attempt = 1; attempt <= XAI_OAUTH_RATE_LIMIT_MAX_ATTEMPTS; attempt += 1) {
+      const result = await this.executeOauthAttempt(ctx, attempt);
+      if (result.status !== "xai_oauth_rate_limited_retry") {
+        return result;
+      }
+      if (attempt >= XAI_OAUTH_RATE_LIMIT_MAX_ATTEMPTS) {
+        return NodeResult.fail("xai_oauth_rate_limited", "xAI OAuth device 页面被限流，重试后仍未恢复", result.data || {});
+      }
+      logger.warn("xAI OAuth device 页面被限流，等待后重新获取 OAuth 链接", {
+        attempt,
+        maxAttempts: XAI_OAUTH_RATE_LIMIT_MAX_ATTEMPTS,
+        retryDelayMs: XAI_OAUTH_RATE_LIMIT_RETRY_DELAY_MS,
+        currentUrl: result.data?.currentUrl || ""
+      });
+      await sleep(XAI_OAUTH_RATE_LIMIT_RETRY_DELAY_MS, ctx.signal);
+      if (ctx.signal?.aborted) {
+        return NodeResult.fail("stopped", "流程已停止");
+      }
+    }
+    return NodeResult.fail("xai_oauth_rate_limited", "xAI OAuth device 页面被限流");
+  }
+
+  async executeOauthAttempt(ctx, attempt) {
     let oauth;
     try {
       oauth = await ctx.services.accountManagementService.getOauthUrl({
@@ -26,9 +51,20 @@ export class XAiRefreshOAuthAndLoginNode extends RegisterNode {
       return NodeResult.fail("xai_oauth_request_failed", formatServiceError(error));
     }
     ctx.state.xaiOauthUrl = oauth;
+    logger.info("访问 xAI OAuth 链接", {
+      attempt,
+      maxAttempts: XAI_OAUTH_RATE_LIMIT_MAX_ATTEMPTS,
+      oauthFlow: oauth.oauthFlow || "",
+      userCode: oauth.userCode || "",
+      url: oauth.url
+    });
     await ctx.tabs.navigate(oauth.url);
 
     const readyResult = await waitForAnyCondition([
+      {
+        name: "rate_limited_url",
+        check: () => getRateLimitedOauthUrl(ctx)
+      },
       {
         name: "consent_url",
         check: () => ctx.tabs.urlContains("/oauth2/consent")
@@ -53,6 +89,13 @@ export class XAiRefreshOAuthAndLoginNode extends RegisterNode {
     if (!readyResult.matched) {
       return NodeResult.fail("xai_oauth_unexpected_url", `访问 xAI OAuth 后未进入 consent 或 device 页面: ${await ctx.tabs.getCurrentUrl()}`);
     }
+    if (readyResult.name === "rate_limited_url") {
+      return NodeResult.ok("xai_oauth_rate_limited_retry", {
+        currentUrl: readyResult.value,
+        attempt,
+        xaiOauthUrl: oauth
+      });
+    }
 
     const isDeviceFlow = isXAiDeviceOauthUrl(oauth.url) || readyResult.name.startsWith("device_");
     if (readyResult.name === "device_login") {
@@ -64,6 +107,10 @@ export class XAiRefreshOAuthAndLoginNode extends RegisterNode {
         });
       }
       const deviceConsentResult = await waitForAnyCondition([
+        {
+          name: "rate_limited_url",
+          check: () => getRateLimitedOauthUrl(ctx)
+        },
         {
           name: "device_consent_url",
           check: () => ctx.tabs.urlContains("/oauth2/device/consent")
@@ -77,6 +124,13 @@ export class XAiRefreshOAuthAndLoginNode extends RegisterNode {
         label: "xAI device consent 页面",
         signal: ctx.signal
       });
+      if (deviceConsentResult.name === "rate_limited_url") {
+        return NodeResult.ok("xai_oauth_rate_limited_retry", {
+          currentUrl: deviceConsentResult.value,
+          attempt,
+          xaiOauthUrl: oauth
+        });
+      }
       if (!deviceConsentResult.matched) {
         return NodeResult.fail("xai_oauth_unexpected_url", `点击 xAI device 继续后未进入 consent 页面: ${await ctx.tabs.getCurrentUrl()}`);
       }
@@ -95,6 +149,11 @@ export class XAiRefreshOAuthAndLoginNode extends RegisterNode {
       currentUrl
     });
   }
+}
+
+async function getRateLimitedOauthUrl(ctx) {
+  const currentUrl = await ctx.tabs.getCurrentUrl();
+  return isXAiOauthRateLimitedUrl(currentUrl) ? currentUrl : null;
 }
 
 async function findDeviceLoginPage(ctx) {
@@ -132,6 +191,16 @@ async function findDeviceLoginPage(ctx) {
 function isXAiDeviceOauthUrl(value) {
   try {
     return new URL(value || "").pathname.startsWith("/oauth2/device");
+  } catch {
+    return false;
+  }
+}
+
+function isXAiOauthRateLimitedUrl(value) {
+  try {
+    const url = new URL(value || "");
+    return url.pathname.startsWith("/oauth2/device")
+      && url.searchParams.get("error") === "rate_limited";
   } catch {
     return false;
   }

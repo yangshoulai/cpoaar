@@ -204,6 +204,8 @@ const RESULT_STATUS_LABELS = {
   xai_oauth_consent_ready: "xAI OAuth Consent 已就绪",
   xai_oauth_device_continue_failed: "xAI Device 继续失败",
   xai_oauth_device_done_missing: "xAI Device 完成页缺失",
+  xai_oauth_rate_limited: "xAI OAuth 限流",
+  xai_oauth_rate_limited_retry: "xAI OAuth 限流重试",
   xai_oauth_state_missing: "xAI OAuth 缺少 state",
   xai_account_exported: "xAI 账号已导出",
   xai_account_export_failed: "xAI 账号导出失败",
