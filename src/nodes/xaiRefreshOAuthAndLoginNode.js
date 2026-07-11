@@ -6,7 +6,7 @@ import { clickVisibleButtonByText, findVisibleButtonByText } from "./xaiHelpers.
 
 const logger = createLogger("node.xai-oauth");
 const XAI_OAUTH_RATE_LIMIT_MAX_ATTEMPTS = 3;
-const XAI_OAUTH_RATE_LIMIT_RETRY_DELAY_MS = 60000;
+const XAI_OAUTH_RATE_LIMIT_RETRY_DELAY_MS = 30000;
 
 export class XAiRefreshOAuthAndLoginNode extends RegisterNode {
   static name = "xai_refresh_oauth_and_login";

@@ -10,6 +10,7 @@ import {
   getRunModeLabel,
   isOpenAiRegisterMode,
   isReauthorizeMode,
+  isXAiReauthorizeMode,
   normalizeRunMode
 } from "../core/runModes.js";
 import { createLogger } from "../core/logger.js";
@@ -632,7 +633,9 @@ async function renderHistoryTable() {
   const pageRecords = filtered.slice((historyPage - 1) * HISTORY_PAGE_SIZE, historyPage * HISTORY_PAGE_SIZE);
 
   dom.dataTableWrap.innerHTML = "";
-  dom.dataTableWrap.append(renderHistoryControls(filtered.length, totalPages));
+  dom.dataTableWrap.append(renderHistoryControls(filtered.length, totalPages, {
+    allCount: accountHistoryCount
+  }));
   if (!pageRecords.length) {
     const empty = document.createElement("div");
     empty.className = "table-empty";
@@ -656,7 +659,7 @@ async function renderHistoryTable() {
   dom.dataTableWrap.append(table);
 }
 
-function renderHistoryControls(totalCount, totalPages) {
+function renderHistoryControls(totalCount, totalPages, options = {}) {
   const wrapper = document.createElement("div");
   wrapper.className = "data-toolbar";
 
@@ -691,6 +694,20 @@ function renderHistoryControls(totalCount, totalPages) {
     renderHistoryTable();
   });
   pager.append(prev, text, next);
+  if (isXAiReauthorizeMode(getRegisterMode())) {
+    const authorizeAllButton = document.createElement("button");
+    authorizeAllButton.type = "button";
+    authorizeAllButton.className = "table-action primary";
+    authorizeAllButton.textContent = "全部授权";
+    authorizeAllButton.disabled = isFlowBusy() || Number(options.allCount || 0) <= 0;
+    authorizeAllButton.title = options.allCount
+      ? `对全部 ${options.allCount} 个 xAI 历史账号重新授权`
+      : "暂无可重新授权的 xAI 历史账号";
+    authorizeAllButton.addEventListener("click", startAllXAiReauthorize);
+    wrapper.append(input, authorizeAllButton, pager);
+    return wrapper;
+  }
+
   wrapper.append(input, pager);
   return wrapper;
 }
@@ -874,6 +891,132 @@ async function startReauthorize(record) {
   });
 }
 
+async function startAllXAiReauthorize() {
+  if (isFlowBusy()) {
+    showConfigMessage("流程正在运行，不能启动全部授权", true);
+    return;
+  }
+  if (!isXAiReauthorizeMode(getRegisterMode())) {
+    showConfigMessage("全部授权只支持 xAI 授权模式", true);
+    return;
+  }
+  const errors = validateConfig(appConfig);
+  if (errors.length) {
+    showConfigMessage(errors.join("；"), true);
+    return;
+  }
+
+  const history = await loadRegisterHistory();
+  const records = history
+    .filter((record) => record.accountType === getCurrentAccountType())
+    .filter((record) => record.emailAddress || record.emailAccount?.emailAddress);
+  if (!records.length) {
+    showConfigMessage("暂无可重新授权的 xAI 历史账号", true);
+    return;
+  }
+
+  await clearSnapshot();
+  await clearLogs();
+  dom.logList.innerHTML = "";
+  renderedLogIds.clear();
+  batchRunState = {
+    total: records.length,
+    success: 0,
+    failed: 0,
+    stopRequested: false,
+    startedAt: new Date().toISOString(),
+    type: "xai_reauthorize_all"
+  };
+  updateRunButtons(lastSnapshot);
+  logger.info("xAI 全部授权流程开始", {
+    total: records.length
+  });
+
+  try {
+    for (let index = 0; index < records.length; index += 1) {
+      if (batchRunState.stopRequested) {
+        break;
+      }
+      const record = records[index];
+      const round = index + 1;
+      logger.info("xAI 全部授权账号开始", {
+        round,
+        total: records.length,
+        email: record.emailAddress || record.emailAccount?.emailAddress || ""
+      });
+
+      let initialState;
+      try {
+        initialState = await buildReauthorizeState(record);
+      } catch (error) {
+        batchRunState.failed += 1;
+        logger.warn("xAI 全部授权账号跳过", {
+          round,
+          total: records.length,
+          email: record.emailAddress || record.emailAccount?.emailAddress || "",
+          error: error.message
+        });
+        continue;
+      }
+
+      let result;
+      try {
+        result = await runReauthorizeFlow(initialState, {
+          email: record.emailAddress,
+          emailMode: record.emailMode,
+          source: "bulk_history",
+          mode: RUN_MODES.xaiReauthorize,
+          preserveLogs: true
+        });
+      } catch (error) {
+        result = {
+          success: false,
+          status: "exception",
+          error: error.message
+        };
+      }
+      if (result?.status === "stopped" || batchRunState.stopRequested) {
+        batchRunState.stopRequested = true;
+        break;
+      }
+      if (result?.success) {
+        batchRunState.success += 1;
+        logger.info("xAI 全部授权账号成功", {
+          round,
+          total: records.length,
+          email: record.emailAddress || record.emailAccount?.emailAddress || "",
+          status: result.status
+        });
+      } else {
+        batchRunState.failed += 1;
+        logger.warn("xAI 全部授权账号失败，继续下一个", {
+          round,
+          total: records.length,
+          email: record.emailAddress || record.emailAccount?.emailAddress || "",
+          status: result?.status || "",
+          error: result?.error || ""
+        });
+      }
+    }
+
+    const stopped = batchRunState.stopRequested;
+    logger[stopped ? "warn" : "info"]("xAI 全部授权流程结束", {
+      total: batchRunState.total,
+      success: batchRunState.success,
+      failed: batchRunState.failed,
+      stopped
+    });
+    showConfigMessage(stopped
+      ? `xAI 全部授权已停止：成功 ${batchRunState.success}，失败 ${batchRunState.failed}`
+      : `xAI 全部授权完成：成功 ${batchRunState.success}，失败 ${batchRunState.failed}`);
+  } finally {
+    runner = null;
+    batchRunState = null;
+    updateRunButtons(lastSnapshot);
+    await renderHistoryTable();
+  }
+}
+
 async function runReauthorizeFlow(initialState, logData = {}) {
   const targetMode = normalizeRunMode(logData.mode || initialState.runMode || getRegisterMode());
   if (!isReauthorizeMode(targetMode)) {
@@ -884,13 +1027,18 @@ async function runReauthorizeFlow(initialState, logData = {}) {
   await saveConfig(appConfig);
   rebuildFlowForMode();
   await clearSnapshot();
-  await clearLogs();
-  dom.logList.innerHTML = "";
-  renderedLogIds.clear();
+  if (!logData.preserveLogs) {
+    await clearLogs();
+    dom.logList.innerHTML = "";
+    renderedLogIds.clear();
+  }
 
   const tabs = new TabController();
   const initialSnapshot = await createInitialSnapshot(flow);
-  const ctx = createRunContext(tabs, initialSnapshot, initialState);
+  const ctx = createRunContext(tabs, initialSnapshot, {
+    ...(initialState || {}),
+    preserveLogsOnStartup: Boolean(logData.preserveLogs || initialState?.preserveLogsOnStartup)
+  });
   const currentRunner = new FlowRunner(flow, ctx, renderSnapshot);
   runner = currentRunner;
   logger.info("开始重新授权流程", {
@@ -901,7 +1049,7 @@ async function runReauthorizeFlow(initialState, logData = {}) {
     label: getRunModeLabel(targetMode)
   });
   try {
-    await currentRunner.run();
+    return await currentRunner.run();
   } finally {
     if (runner === currentRunner) {
       runner = null;
