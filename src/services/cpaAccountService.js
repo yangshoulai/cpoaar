@@ -39,6 +39,8 @@ export class CpaAccountService {
     return {
       url: payload.url,
       state: payload.state || getUrlQueryParam(payload.url, "state"),
+      oauthFlow: accountType === ACCOUNT_TYPES.xai && isXAiDeviceOauthUrl(payload.url) ? "device" : "authorization_code",
+      userCode: getUrlQueryParam(payload.url, "user_code"),
       attributes: payload
     };
   }
@@ -283,6 +285,14 @@ function getUrlQueryParam(value, key) {
     return new URL(value).searchParams.get(key) || "";
   } catch {
     return "";
+  }
+}
+
+function isXAiDeviceOauthUrl(value) {
+  try {
+    return new URL(value || "").pathname.startsWith("/oauth2/device");
+  } catch {
+    return false;
   }
 }
 

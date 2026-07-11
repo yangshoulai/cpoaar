@@ -19,12 +19,10 @@ export function buildXAiRedirectUrl(code, state = "") {
 export async function findVisibleButtonByText(ctx, keywords) {
   return ctx.tabs.execute((inputKeywords) => {
     const normalizedKeywords = inputKeywords.map((item) => String(item || "").toLowerCase());
-    const button = Array.from(document.querySelectorAll("button"))
-      .find((item) => {
-        const text = String(item.textContent || "").trim().toLowerCase();
-        return isVisible(item)
-          && normalizedKeywords.some((keyword) => keyword && text.includes(keyword));
-      });
+    const button = findBestButton({
+      keywords: normalizedKeywords,
+      clickableOnly: false
+    });
     return button ? describeButton(button) : null;
 
     function describeButton(element) {
@@ -33,8 +31,77 @@ export async function findVisibleButtonByText(ctx, keywords) {
         disabled: element.disabled,
         ariaDisabled: element.getAttribute("aria-disabled") || "",
         type: element.getAttribute("type") || "",
-        name: element.getAttribute("name") || ""
+        name: element.getAttribute("name") || "",
+        value: element.getAttribute("value") || "",
+        formAction: element.form?.getAttribute("action") || "",
+        formMethod: element.form?.getAttribute("method") || ""
       };
+    }
+
+    function findBestButton({ keywords, clickableOnly }) {
+      return Array.from(document.querySelectorAll("button, input[type='button'], input[type='submit']"))
+        .map((item) => ({ item, score: scoreButton(item, keywords, clickableOnly) }))
+        .filter((entry) => entry.score > 0)
+        .sort((left, right) => right.score - left.score)[0]?.item || null;
+    }
+
+    function scoreButton(element, keywords, clickableOnly) {
+      if (clickableOnly ? !isClickable(element) : !isVisible(element)) {
+        return 0;
+      }
+      const text = getButtonText(element).toLowerCase();
+      if (!text || !keywords.some((keyword) => keyword && text.includes(keyword))) {
+        return 0;
+      }
+      if (isAllowSearch(keywords) && isNegativeAllowText(text)) {
+        return 0;
+      }
+      let score = 10;
+      if (keywords.some((keyword) => keyword && text === keyword)) {
+        score += 100;
+      }
+      const actionText = [
+        element.getAttribute("name"),
+        element.getAttribute("value"),
+        element.getAttribute("data-action"),
+        element.getAttribute("aria-label")
+      ].filter(Boolean).join(" ").toLowerCase();
+      if (/(allow|approve|authorize|accept|consent)/.test(actionText)) {
+        score += 40;
+      }
+      return score;
+    }
+
+    function getButtonText(element) {
+      if (element instanceof HTMLInputElement) {
+        return String(element.value || element.getAttribute("aria-label") || "").trim();
+      }
+      return String(element.textContent || element.getAttribute("aria-label") || "").trim();
+    }
+
+    function isAllowSearch(keywords) {
+      return keywords.some((keyword) => ["允许", "allow", "authorize", "approve"].includes(keyword));
+    }
+
+    function isNegativeAllowText(text) {
+      return [
+        "不允许",
+        "拒绝",
+        "取消",
+        "don't allow",
+        "do not allow",
+        "deny",
+        "decline",
+        "reject",
+        "cancel",
+        "not now"
+      ].some((keyword) => text.includes(keyword));
+    }
+
+    function isClickable(element) {
+      return isVisible(element)
+        && !element.disabled
+        && element.getAttribute("aria-disabled") !== "true";
     }
 
     function isVisible(element) {
@@ -49,12 +116,10 @@ export async function findVisibleButtonByText(ctx, keywords) {
 export async function clickVisibleButtonByText(ctx, keywords) {
   return ctx.tabs.execute((inputKeywords) => {
     const normalizedKeywords = inputKeywords.map((item) => String(item || "").toLowerCase());
-    const button = Array.from(document.querySelectorAll("button"))
-      .find((item) => {
-        const text = String(item.textContent || "").trim().toLowerCase();
-        return isClickable(item)
-          && normalizedKeywords.some((keyword) => keyword && text.includes(keyword));
-      });
+    const button = findBestButton({
+      keywords: normalizedKeywords,
+      clickableOnly: true
+    });
     if (!button) {
       return { ok: false, button: null };
     }
@@ -63,11 +128,74 @@ export async function clickVisibleButtonByText(ctx, keywords) {
     return {
       ok: true,
       button: {
-        text: String(button.textContent || "").trim(),
+        text: getButtonText(button),
         type: button.getAttribute("type") || "",
-        name: button.getAttribute("name") || ""
+        name: button.getAttribute("name") || "",
+        value: button.getAttribute("value") || "",
+        formAction: button.form?.getAttribute("action") || "",
+        formMethod: button.form?.getAttribute("method") || ""
       }
     };
+
+    function findBestButton({ keywords, clickableOnly }) {
+      return Array.from(document.querySelectorAll("button, input[type='button'], input[type='submit']"))
+        .map((item) => ({ item, score: scoreButton(item, keywords, clickableOnly) }))
+        .filter((entry) => entry.score > 0)
+        .sort((left, right) => right.score - left.score)[0]?.item || null;
+    }
+
+    function scoreButton(element, keywords, clickableOnly) {
+      if (clickableOnly ? !isClickable(element) : !isVisible(element)) {
+        return 0;
+      }
+      const text = getButtonText(element).toLowerCase();
+      if (!text || !keywords.some((keyword) => keyword && text.includes(keyword))) {
+        return 0;
+      }
+      if (isAllowSearch(keywords) && isNegativeAllowText(text)) {
+        return 0;
+      }
+      let score = 10;
+      if (keywords.some((keyword) => keyword && text === keyword)) {
+        score += 100;
+      }
+      const actionText = [
+        element.getAttribute("name"),
+        element.getAttribute("value"),
+        element.getAttribute("data-action"),
+        element.getAttribute("aria-label")
+      ].filter(Boolean).join(" ").toLowerCase();
+      if (/(allow|approve|authorize|accept|consent)/.test(actionText)) {
+        score += 40;
+      }
+      return score;
+    }
+
+    function getButtonText(element) {
+      if (element instanceof HTMLInputElement) {
+        return String(element.value || element.getAttribute("aria-label") || "").trim();
+      }
+      return String(element.textContent || element.getAttribute("aria-label") || "").trim();
+    }
+
+    function isAllowSearch(keywords) {
+      return keywords.some((keyword) => ["允许", "allow", "authorize", "approve"].includes(keyword));
+    }
+
+    function isNegativeAllowText(text) {
+      return [
+        "不允许",
+        "拒绝",
+        "取消",
+        "don't allow",
+        "do not allow",
+        "deny",
+        "decline",
+        "reject",
+        "cancel",
+        "not now"
+      ].some((keyword) => text.includes(keyword));
+    }
 
     function isClickable(element) {
       const style = window.getComputedStyle(element);

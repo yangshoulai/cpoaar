@@ -2,7 +2,7 @@ import { RegisterNode, NodeResult } from "../core/flow.js";
 import { waitForAnyCondition } from "../core/browser.js";
 import { createLogger } from "../core/logger.js";
 import { ACCOUNT_TYPES } from "../core/runModes.js";
-import { findVisibleButtonByText } from "./xaiHelpers.js";
+import { clickVisibleButtonByText, findVisibleButtonByText } from "./xaiHelpers.js";
 
 const logger = createLogger("node.xai-oauth");
 
@@ -28,10 +28,18 @@ export class XAiRefreshOAuthAndLoginNode extends RegisterNode {
     ctx.state.xaiOauthUrl = oauth;
     await ctx.tabs.navigate(oauth.url);
 
-    const consentResult = await waitForAnyCondition([
+    const readyResult = await waitForAnyCondition([
       {
         name: "consent_url",
         check: () => ctx.tabs.urlContains("/oauth2/consent")
+      },
+      {
+        name: "device_consent_url",
+        check: () => ctx.tabs.urlContains("/oauth2/device/consent")
+      },
+      {
+        name: "device_login",
+        check: () => findDeviceLoginPage(ctx)
       },
       {
         name: "allow_button",
@@ -39,20 +47,101 @@ export class XAiRefreshOAuthAndLoginNode extends RegisterNode {
       }
     ], {
       timeoutMs: 30000,
-      label: "xAI OAuth consent 页面",
+      label: "xAI OAuth consent 或 device 页面",
       signal: ctx.signal
     });
-    if (!consentResult.matched) {
-      return NodeResult.fail("xai_oauth_unexpected_url", `访问 xAI OAuth 后未进入 consent 页面: ${await ctx.tabs.getCurrentUrl()}`);
+    if (!readyResult.matched) {
+      return NodeResult.fail("xai_oauth_unexpected_url", `访问 xAI OAuth 后未进入 consent 或 device 页面: ${await ctx.tabs.getCurrentUrl()}`);
     }
 
-    logger.info("xAI OAuth consent 已就绪", {
-      currentUrl: await ctx.tabs.getCurrentUrl()
+    const isDeviceFlow = isXAiDeviceOauthUrl(oauth.url) || readyResult.name.startsWith("device_");
+    if (readyResult.name === "device_login") {
+      const continueResult = await clickVisibleButtonByText(ctx, ["继续", "continue"]);
+      if (!continueResult.ok) {
+        return NodeResult.fail("xai_oauth_device_continue_failed", "未能点击 xAI device 登录继续按钮", {
+          currentUrl: await ctx.tabs.getCurrentUrl(),
+          xaiOauthUrl: oauth
+        });
+      }
+      const deviceConsentResult = await waitForAnyCondition([
+        {
+          name: "device_consent_url",
+          check: () => ctx.tabs.urlContains("/oauth2/device/consent")
+        },
+        {
+          name: "allow_button",
+          check: () => findVisibleButtonByText(ctx, ["允许", "allow", "authorize"])
+        }
+      ], {
+        timeoutMs: 30000,
+        label: "xAI device consent 页面",
+        signal: ctx.signal
+      });
+      if (!deviceConsentResult.matched) {
+        return NodeResult.fail("xai_oauth_unexpected_url", `点击 xAI device 继续后未进入 consent 页面: ${await ctx.tabs.getCurrentUrl()}`);
+      }
+    }
+
+    const currentUrl = await ctx.tabs.getCurrentUrl();
+    const oauthFlow = isDeviceFlow ? "device" : "authorization_code";
+    logger.info(oauthFlow === "device" ? "xAI device OAuth consent 已就绪" : "xAI OAuth consent 已就绪", {
+      currentUrl,
+      userCode: oauthFlow === "device" ? resolveDeviceUserCode(oauth.url) : ""
     });
     return NodeResult.ok(XAiRefreshOAuthAndLoginNode.statuses.consent, {
       xaiOauthUrl: oauth,
-      currentUrl: await ctx.tabs.getCurrentUrl()
+      xaiOauthFlow: oauthFlow,
+      xaiOauthDeviceUserCode: oauthFlow === "device" ? resolveDeviceUserCode(oauth.url) : "",
+      currentUrl
     });
+  }
+}
+
+async function findDeviceLoginPage(ctx) {
+  return ctx.tabs.execute(() => {
+    const title = Array.from(document.querySelectorAll("h1"))
+      .map((item) => String(item.textContent || "").trim())
+      .find((text) => {
+        const normalized = text.toLowerCase();
+        return text === "登录 Grok Build" || normalized === "login grok build";
+      });
+    if (!title) {
+      return null;
+    }
+    const button = Array.from(document.querySelectorAll("button"))
+      .find((item) => {
+        const text = String(item.textContent || "").trim().toLowerCase();
+        return isClickable(item) && (text.includes("继续") || text.includes("continue"));
+      });
+    return button ? {
+      title,
+      buttonText: String(button.textContent || "").trim()
+    } : null;
+
+    function isClickable(element) {
+      const style = window.getComputedStyle(element);
+      return style.visibility !== "hidden"
+        && style.display !== "none"
+        && element.getClientRects().length > 0
+        && !element.disabled
+        && element.getAttribute("aria-disabled") !== "true";
+    }
+  });
+}
+
+function isXAiDeviceOauthUrl(value) {
+  try {
+    return new URL(value || "").pathname.startsWith("/oauth2/device");
+  } catch {
+    return false;
+  }
+}
+
+function resolveDeviceUserCode(value) {
+  try {
+    return new URL(value || "").searchParams.get("user_code") || "";
+  } catch {
+    return "";
   }
 }
 
