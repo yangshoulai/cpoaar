@@ -1,6 +1,6 @@
 import { TabController } from "../core/browser.js";
 import { FlowRunner, createInitialSnapshot } from "../core/flow.js";
-import { STORAGE_KEYS, clearLogs, clearSnapshot, loadConfig, loadLogs, loadOutlookGroups, loadRegisterHistory, loadSnapshot, saveConfig, saveOutlookGroups, saveSnapshot } from "../core/storage.js";
+import { STORAGE_KEYS, clearLogs, clearRegisterHistoryByAccountType, clearSnapshot, loadConfig, loadLogs, loadOutlookGroups, loadRegisterHistory, loadSnapshot, saveConfig, saveOutlookGroups, saveSnapshot } from "../core/storage.js";
 import { getActiveRuntimeConfig, normalizeConfig, validateConfig } from "../core/config.js";
 import {
   RUN_MODES,
@@ -728,6 +728,7 @@ function renderHistoryControls(totalCount, totalPages, options = {}) {
     renderHistoryTable();
   });
   pager.append(prev, text, next);
+  const clearAllButton = renderClearAllHistoryButton(options);
   if (isXAiReauthorizeMode(getRegisterMode())) {
     const authorizeAllButton = document.createElement("button");
     authorizeAllButton.type = "button";
@@ -738,12 +739,28 @@ function renderHistoryControls(totalCount, totalPages, options = {}) {
       ? `对全部 ${options.allCount} 个 xAI 历史账号重新授权`
       : "暂无可重新授权的 xAI 历史账号";
     authorizeAllButton.addEventListener("click", startAllXAiReauthorize);
-    wrapper.append(input, authorizeAllButton, pager);
+    wrapper.append(input, authorizeAllButton, clearAllButton, pager);
     return wrapper;
   }
 
-  wrapper.append(input, pager);
+  wrapper.append(input, clearAllButton, pager);
   return wrapper;
+}
+
+function renderClearAllHistoryButton(options = {}) {
+  const accountType = getCurrentAccountType();
+  const accountTypeLabel = getAccountTypeLabel(accountType);
+  const totalCount = Number(options.allCount || 0);
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "table-action danger";
+  button.textContent = "清除全部";
+  button.disabled = isFlowBusy() || totalCount <= 0;
+  button.title = totalCount
+    ? `清除全部 ${totalCount} 条 ${accountTypeLabel} 本地历史记录`
+    : `暂无可清除的 ${accountTypeLabel} 历史记录`;
+  button.addEventListener("click", clearAllHistoryRecords);
+  return button;
 }
 
 function filterHistory(history) {
@@ -897,6 +914,29 @@ async function deleteHistoryRecord(record, button) {
     button.disabled = false;
     button.textContent = originalText;
   }
+}
+
+async function clearAllHistoryRecords() {
+  if (isFlowBusy()) {
+    showConfigMessage("流程正在运行，不能清除历史记录", true);
+    return;
+  }
+  const accountType = getCurrentAccountType();
+  const accountTypeLabel = getAccountTypeLabel(accountType);
+  const history = await loadRegisterHistory();
+  const count = history.filter((record) => record.accountType === accountType).length;
+  if (!count) {
+    showConfigMessage(`暂无 ${accountTypeLabel} 历史记录可清除`, true);
+    return;
+  }
+  if (!window.confirm(`确定清除全部 ${count} 条 ${accountTypeLabel} 历史记录？\n此操作只清除本地历史记录，不会删除邮箱或账号服务中的账号。`)) {
+    return;
+  }
+  await clearRegisterHistoryByAccountType(accountType);
+  historyFilterValue = "";
+  historyPage = 1;
+  await renderHistoryTable();
+  showConfigMessage(`${accountTypeLabel} 历史记录已清除：${count} 条`);
 }
 
 async function startReauthorize(record) {

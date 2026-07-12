@@ -85,6 +85,14 @@ export async function deleteRegisterHistory(id) {
   return nextHistory;
 }
 
+export async function clearRegisterHistoryByAccountType(accountType) {
+  const normalizedType = normalizeAccountType(accountType);
+  const history = await loadRegisterHistory();
+  const nextHistory = history.filter((record) => record.accountType !== normalizedType);
+  await saveRegisterHistory(nextHistory);
+  return nextHistory;
+}
+
 export async function loadOutlookGroups() {
   const values = await chrome.storage.local.get(STORAGE_KEYS.outlookGroups);
   return values[STORAGE_KEYS.outlookGroups] || [];
