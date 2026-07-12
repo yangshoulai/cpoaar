@@ -1,13 +1,15 @@
 import { RegisterNode, NodeResult } from "../core/flow.js";
-import { waitForAnyCondition } from "../core/browser.js";
+import { sleep, waitForAnyCondition } from "../core/browser.js";
 import { createLogger } from "../core/logger.js";
 
 const logger = createLogger("node.add-phone");
+const WHATSAPP_DEFAULT_NOTICE_WAIT_MS = 1500;
 
 const RETRYABLE_PHONE_ERRORS = [
   "电话号码已被使用",
   "电话号码无效",
   "请继续通过 WhatsApp 发送验证码",
+  "通过 WhatsApp 向该号码发送一次性验证码",
   "此电话号码已关联到可关联的最多账户"
 ];
 
@@ -91,6 +93,23 @@ export class AddPhoneNumberNode extends RegisterNode {
     }
 
     await selectSmsMethodIfPresent(ctx);
+    const whatsappDefaultNotice = await waitForWhatsAppDefaultNotice(ctx);
+    if (whatsappDefaultNotice) {
+      const currentUrl = await ctx.tabs.getCurrentUrl();
+      const message = whatsappDefaultNotice.text || "我们会通过 WhatsApp 向该号码发送一次性验证码进行验证。";
+      logger.warn("手机号默认通过 WhatsApp 发送验证码，当前短信服务不可用，标记号码不可用", {
+        mobile: account.mobile,
+        provider: mobileNumber.attributes?.provider || "",
+        message
+      });
+      await ctx.services.smsService.callback(mobileNumber, false);
+      return NodeResult.fail("phone_submit_error", message, {
+        smsMobileNumber: mobileNumber,
+        currentUrl,
+        whatsappDefaultNotice
+      });
+    }
+
     const phoneSubmittedAt = new Date().toISOString();
     ctx.state.phoneSubmittedAt = phoneSubmittedAt;
     await ctx.tabs.click("button[type='submit']");
@@ -141,7 +160,7 @@ async function resolvePhoneInputSelector(ctx) {
 async function selectSmsMethodIfPresent(ctx) {
   const smsState = await ctx.tabs.getLabelStateForInputValue("sms");
   if (smsState === null) {
-    logger.info("页面没有短信/WhatsApp 选择项，按默认 SMS 继续");
+    logger.info("页面没有短信/WhatsApp 选择项，按页面默认方式继续");
     return;
   }
   if (smsState === "on") {
@@ -151,6 +170,56 @@ async function selectSmsMethodIfPresent(ctx) {
   logger.info("切换验证码接收方式为 SMS");
   await ctx.tabs.clickLabelForInputValue("whatsapp");
   await ctx.tabs.clickLabelForInputValue("sms");
+}
+
+async function waitForWhatsAppDefaultNotice(ctx) {
+  const deadline = Date.now() + WHATSAPP_DEFAULT_NOTICE_WAIT_MS;
+  while (Date.now() <= deadline) {
+    if (ctx.signal?.aborted) {
+      return null;
+    }
+    const notice = await detectWhatsAppDefaultNotice(ctx);
+    if (notice) {
+      return notice;
+    }
+    await sleep(250, ctx.signal);
+  }
+  return null;
+}
+
+async function detectWhatsAppDefaultNotice(ctx) {
+  return ctx.tabs.execute(() => {
+    const keywords = [
+      "我们会通过 whatsapp 向该号码发送一次性验证码进行验证",
+      "通过 whatsapp 向该号码发送一次性验证码",
+      "whatsapp 向该号码发送一次性验证码",
+      "send a one-time code to this number via whatsapp",
+      "send a one-time code via whatsapp"
+    ];
+    const visibleText = String(document.body?.innerText || "")
+      .replace(/\s+/g, " ")
+      .trim();
+    const normalized = visibleText.toLowerCase();
+    const matched = keywords.find((keyword) => normalized.includes(keyword));
+    if (!matched) {
+      return null;
+    }
+    return {
+      text: extractNoticeText(visibleText, matched),
+      matchedKeyword: matched
+    };
+
+    function extractNoticeText(text, keyword) {
+      const lowerText = text.toLowerCase();
+      const index = lowerText.indexOf(keyword);
+      if (index < 0) {
+        return text.slice(0, 240);
+      }
+      const start = Math.max(0, index - 80);
+      const end = Math.min(text.length, index + keyword.length + 120);
+      return text.slice(start, end).trim();
+    }
+  });
 }
 
 function takePendingMobile(ctx) {

@@ -1,5 +1,5 @@
 import { HttpClient } from "../core/http.js";
-import { getAccountProfileConfig, getProviderConfig } from "../core/config.js";
+import { getAccountProfileConfig, getProviderConfig, getActiveRuntimeConfig } from "../core/config.js";
 import { getAccountTypeByMode } from "../core/runModes.js";
 import { createAccount } from "../core/account.js";
 import { SmsActivationStore } from "./smsActivationStore.js";
@@ -10,28 +10,29 @@ import { SmsBowerService } from "./smsBowerService.js";
 import { ManualSmsService } from "./manualSmsService.js";
 
 export function createServices(config) {
-  const httpClient = new HttpClient(config.httpService);
+  const runtimeConfig = getActiveRuntimeConfig(config);
+  const httpClient = new HttpClient(runtimeConfig.httpService);
   const activationStore = new SmsActivationStore();
-  const smsProvider = normalizeSmsProvider(config.smsService.provider);
-  const smsConfig = smsProvider ? config.smsService.providers[smsProvider] : null;
-  const activationStoreConfig = buildActivationStoreConfig(config);
+  const smsProvider = normalizeSmsProvider(runtimeConfig.smsService.provider);
+  const smsConfig = smsProvider ? runtimeConfig.smsService.providers[smsProvider] : null;
+  const activationStoreConfig = buildActivationStoreConfig(runtimeConfig);
   const accountManagementService = new CpaAccountService(
-    getProviderConfig(config, "accountManagementService"),
+    getProviderConfig(runtimeConfig, "accountManagementService"),
     httpClient,
     {
-      accountType: getAccountTypeByMode(config.register?.mode)
+      accountType: getAccountTypeByMode(runtimeConfig.register?.mode)
     }
   );
 
   return {
-    config,
+    config: runtimeConfig,
     httpClient,
     activationStore,
     accountService: {
-      createAccount: () => createAccount(getAccountProfileConfig(config))
+      createAccount: () => createAccount(getAccountProfileConfig(runtimeConfig))
     },
     emailService: new OutlookMailEmailService(
-      getProviderConfig(config, "emailService"),
+      getProviderConfig(runtimeConfig, "emailService"),
       httpClient
     ),
     accountManagementService,

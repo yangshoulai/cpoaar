@@ -15,6 +15,7 @@ export class SelectCodexAccountNode extends RegisterNode {
   static name = "select_codex_account";
   static statuses = {
     emailVerificationReady: "codex_oauth_email_verification_ready",
+    addEmailReady: "codex_oauth_add_email_ready",
     needsPhone: "codex_oauth_needs_phone",
     consent: "codex_oauth_consent_ready",
     accountDeleted: "reauthorize_account_deactivated_ready"
@@ -26,8 +27,8 @@ export class SelectCodexAccountNode extends RegisterNode {
 
   async execute(ctx) {
     const account = ctx.state.account;
-    if (!account?.emailAddress) {
-      return NodeResult.fail("codex_oauth_account_select_failed", "上下文缺少账号邮箱");
+    if (!account?.emailAddress && !account?.mobile) {
+      return NodeResult.fail("codex_oauth_account_select_failed", "上下文缺少账号邮箱或手机号");
     }
 
     let oauth;
@@ -42,7 +43,11 @@ export class SelectCodexAccountNode extends RegisterNode {
     const accountResult = await waitForAnyCondition([
       {
         name: "account_button",
-        check: () => ctx.tabs.findAccountButton(account.emailAddress)
+        check: () => findOAuthAccountButton(ctx, account)
+      },
+      {
+        name: "add_email",
+        check: () => findAddEmailPage(ctx)
       },
       {
         name: "email_input",
@@ -81,7 +86,13 @@ export class SelectCodexAccountNode extends RegisterNode {
     if (accountResult.name === "consent") {
       return NodeResult.ok(SelectCodexAccountNode.statuses.consent, { currentUrl: await ctx.tabs.getCurrentUrl() });
     }
+    if (accountResult.name === "add_email") {
+      return NodeResult.ok(SelectCodexAccountNode.statuses.addEmailReady, { currentUrl: await ctx.tabs.getCurrentUrl() });
+    }
     if (accountResult.name === "email_input") {
+      if (!account.emailAddress) {
+        return NodeResult.fail("codex_oauth_account_select_failed", "OAuth 页面要求邮箱登录，但当前账号尚未绑定邮箱");
+      }
       logger.info("OAuth 页面要求重新登录，填写邮箱");
       await ctx.tabs.fill("input[name='email']", account.emailAddress);
       ctx.state.emailSubmittedAt = new Date().toISOString();
@@ -95,12 +106,21 @@ export class SelectCodexAccountNode extends RegisterNode {
       return switchToOneTimeCodeLogin(ctx);
     }
 
-    logger.info("点击 Codex OAuth 账号按钮", { email: account.emailAddress });
-    await ctx.tabs.clickAccountButton(account.emailAddress);
+    logger.info("点击 Codex OAuth 账号按钮", { email: account.emailAddress || "", mobile: account.mobile || "" });
+    const clicked = await clickOAuthAccountButton(ctx, account);
+    if (!clicked) {
+      return NodeResult.fail("codex_oauth_account_select_failed", "未能点击 OAuth 账号按钮", {
+        currentUrl: await ctx.tabs.getCurrentUrl()
+      });
+    }
     const nextResult = await waitForAnyCondition([
       {
+        name: "add_email",
+        check: () => findAddEmailPage(ctx)
+      },
+      {
         name: "email_verification_ready",
-        check: () => ctx.tabs.query("input[name='code']")
+        check: () => ctx.tabs.query("input[name='code'], input[type='code']")
       },
       {
         name: "one_time_code_login",
@@ -130,6 +150,9 @@ export class SelectCodexAccountNode extends RegisterNode {
     if (nextResult.name === "email_verification_ready") {
       return NodeResult.ok(SelectCodexAccountNode.statuses.emailVerificationReady, { currentUrl });
     }
+    if (nextResult.name === "add_email") {
+      return NodeResult.ok(SelectCodexAccountNode.statuses.addEmailReady, { currentUrl });
+    }
     if (nextResult.name === "one_time_code_login") {
       return switchToOneTimeCodeLogin(ctx);
     }
@@ -143,6 +166,88 @@ export class SelectCodexAccountNode extends RegisterNode {
       { currentUrl }
     );
   }
+}
+
+async function findOAuthAccountButton(ctx, account) {
+  return ctx.tabs.execute((candidates) => {
+    const button = findButton(candidates);
+    return button ? describeButton(button) : null;
+
+    function findButton(inputCandidates) {
+      const normalizedCandidates = (inputCandidates || []).map((item) => String(item || "").trim()).filter(Boolean);
+      const digitCandidates = normalizedCandidates.map((item) => item.replace(/\D/g, "")).filter((item) => item.length >= 6);
+      return Array.from(document.querySelectorAll("button"))
+        .find((item) => {
+          const text = String(item.textContent || "").trim();
+          if (!text) {
+            return false;
+          }
+          if (normalizedCandidates.some((candidate) => text.includes(candidate))) {
+            return true;
+          }
+          const digits = text.replace(/\D/g, "");
+          return digitCandidates.some((candidate) => digits.includes(candidate));
+        }) || null;
+    }
+
+    function describeButton(button) {
+      return {
+        tagName: button.tagName,
+        text: button.textContent.trim(),
+        value: button.value || "",
+        id: button.id || "",
+        name: button.getAttribute("name") || "",
+        ariaLabel: button.getAttribute("aria-label") || ""
+      };
+    }
+  }, [buildAccountButtonCandidates(account)]);
+}
+
+async function clickOAuthAccountButton(ctx, account) {
+  return ctx.tabs.execute((candidates) => {
+    const button = findButton(candidates);
+    if (!button) {
+      return false;
+    }
+    button.scrollIntoView({ block: "center", inline: "center" });
+    button.click();
+    return true;
+
+    function findButton(inputCandidates) {
+      const normalizedCandidates = (inputCandidates || []).map((item) => String(item || "").trim()).filter(Boolean);
+      const digitCandidates = normalizedCandidates.map((item) => item.replace(/\D/g, "")).filter((item) => item.length >= 6);
+      return Array.from(document.querySelectorAll("button"))
+        .find((item) => {
+          const text = String(item.textContent || "").trim();
+          if (!text) {
+            return false;
+          }
+          if (normalizedCandidates.some((candidate) => text.includes(candidate))) {
+            return true;
+          }
+          const digits = text.replace(/\D/g, "");
+          return digitCandidates.some((candidate) => digits.includes(candidate));
+        }) || null;
+    }
+  }, [buildAccountButtonCandidates(account)]);
+}
+
+function buildAccountButtonCandidates(account = {}) {
+  const mobile = String(account.mobile || "").replace(/^\+/, "");
+  return [
+    account.emailAddress || "",
+    mobile ? `+${mobile}` : "",
+    mobile,
+    mobile.length >= 6 ? mobile.slice(-6) : ""
+  ].filter(Boolean);
+}
+
+async function findAddEmailPage(ctx) {
+  const currentUrl = await ctx.tabs.getCurrentUrl();
+  if (!currentUrl.includes("/add-email")) {
+    return null;
+  }
+  return ctx.tabs.query("input[type='email'], input[name='email']");
 }
 
 async function switchToOneTimeCodeLogin(ctx) {

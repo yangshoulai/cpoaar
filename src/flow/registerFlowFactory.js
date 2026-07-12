@@ -1,12 +1,15 @@
 import { RegisterFlow } from "../core/flow.js";
 import { StartupInitializeNode } from "../nodes/startupInitializeNode.js";
 import { OpenChatGptTabNode } from "../nodes/openChatGptTabNode.js";
+import { OpenChatGptPhoneFirstNode } from "../nodes/openChatGptPhoneFirstNode.js";
 import { FillEmailAndSubmitNode } from "../nodes/fillEmailAndSubmitNode.js";
 import { CreatePasswordNode } from "../nodes/createPasswordNode.js";
 import { WaitEmailVerificationCodeNode } from "../nodes/waitEmailVerificationCodeNode.js";
 import { FillAboutYouNode } from "../nodes/fillAboutYouNode.js";
 import { SelectCodexAccountNode } from "../nodes/selectCodexAccountNode.js";
 import { AddPhoneNumberNode } from "../nodes/addPhoneNumberNode.js";
+import { PhoneFirstAddPhoneNumberNode } from "../nodes/phoneFirstAddPhoneNumberNode.js";
+import { PhoneFirstAddEmailNode } from "../nodes/phoneFirstAddEmailNode.js";
 import { WaitSmsVerificationCodeNode } from "../nodes/waitSmsVerificationCodeNode.js";
 import { SubmitCodexConsentNode } from "../nodes/submitCodexConsentNode.js";
 import { ReauthorizePhoneChallengeNode } from "../nodes/reauthorizePhoneChallengeNode.js";
@@ -20,8 +23,9 @@ import { XAiRefreshOAuthAndLoginNode } from "../nodes/xaiRefreshOAuthAndLoginNod
 import { XAiSubmitConsentNode } from "../nodes/xaiSubmitConsentNode.js";
 import { XAiSignInNode } from "../nodes/xaiSignInNode.js";
 import { RUN_MODES, isXAiRegisterMode, isXAiReauthorizeMode, isOpenAiReauthorizeMode, normalizeRunMode } from "../core/runModes.js";
+import { isOpenAiPhoneFirstRegisterFlow } from "../core/openAiRegisterFlows.js";
 
-export function buildRegisterFlow(mode = RUN_MODES.openaiRegister) {
+export function buildRegisterFlow(mode = RUN_MODES.openaiRegister, options = {}) {
   const runMode = normalizeRunMode(mode);
   if (isOpenAiReauthorizeMode(runMode)) {
     return buildReauthorizeFlow();
@@ -31,6 +35,9 @@ export function buildRegisterFlow(mode = RUN_MODES.openaiRegister) {
   }
   if (isXAiReauthorizeMode(runMode)) {
     return buildXAiReauthorizeFlow();
+  }
+  if (isOpenAiPhoneFirstRegisterFlow(options.openAiRegisterFlow)) {
+    return buildPhoneFirstRegisterFlow();
   }
   return buildEmailRegisterFlow();
 }
@@ -136,6 +143,60 @@ function buildReauthorizeFlow() {
   });
 }
 
+function buildPhoneFirstRegisterFlow() {
+  const nodes = [
+    new StartupInitializeNode(),
+    new OpenChatGptPhoneFirstNode(),
+    new PhoneFirstAddPhoneNumberNode(),
+    new CreatePasswordNode(),
+    new WaitSmsVerificationCodeNode(),
+    new FillAboutYouNode(),
+    new SelectCodexAccountNode(),
+    new PhoneFirstAddEmailNode(),
+    new WaitEmailVerificationCodeNode(),
+    new SubmitCodexConsentNode()
+  ];
+  return new RegisterFlow({
+    startNode: StartupInitializeNode.name,
+    nodes: Object.fromEntries(nodes.map((node) => [node.name, node])),
+    transitions: {
+      [StartupInitializeNode.name]: [
+        { status: StartupInitializeNode.statuses.success, target: OpenChatGptPhoneFirstNode.name }
+      ],
+      [OpenChatGptPhoneFirstNode.name]: [
+        { status: OpenChatGptPhoneFirstNode.statuses.success, target: PhoneFirstAddPhoneNumberNode.name }
+      ],
+      [PhoneFirstAddPhoneNumberNode.name]: [
+        { status: PhoneFirstAddPhoneNumberNode.statuses.success, target: CreatePasswordNode.name }
+      ],
+      [CreatePasswordNode.name]: [
+        { status: CreatePasswordNode.statuses.phoneVerificationReady, target: WaitSmsVerificationCodeNode.name },
+        { status: CreatePasswordNode.statuses.aboutYouReady, target: FillAboutYouNode.name }
+      ],
+      [WaitSmsVerificationCodeNode.name]: [
+        { status: WaitSmsVerificationCodeNode.statuses.retrySelectCodexAccount, target: OpenChatGptPhoneFirstNode.name },
+        { status: WaitSmsVerificationCodeNode.statuses.success, target: SubmitCodexConsentNode.name },
+        { status: WaitSmsVerificationCodeNode.statuses.aboutYouReady, target: FillAboutYouNode.name }
+      ],
+      [FillAboutYouNode.name]: [
+        { status: FillAboutYouNode.statuses.success, target: SelectCodexAccountNode.name }
+      ],
+      [SelectCodexAccountNode.name]: [
+        { status: SelectCodexAccountNode.statuses.addEmailReady, target: PhoneFirstAddEmailNode.name },
+        { status: SelectCodexAccountNode.statuses.emailVerificationReady, target: WaitEmailVerificationCodeNode.name },
+        { status: SelectCodexAccountNode.statuses.consent, target: SubmitCodexConsentNode.name }
+      ],
+      [PhoneFirstAddEmailNode.name]: [
+        { status: PhoneFirstAddEmailNode.statuses.success, target: WaitEmailVerificationCodeNode.name }
+      ],
+      [WaitEmailVerificationCodeNode.name]: [
+        { status: WaitEmailVerificationCodeNode.statuses.retryCurrent, target: WaitEmailVerificationCodeNode.name },
+        { status: WaitEmailVerificationCodeNode.statuses.consent, target: SubmitCodexConsentNode.name }
+      ]
+    }
+  });
+}
+
 function buildXAiRegisterFlow() {
   const nodes = [
     new StartupInitializeNode(),
@@ -196,7 +257,7 @@ function buildXAiReauthorizeFlow() {
   });
 }
 
-export function getNodeOrder(mode = RUN_MODES.openaiRegister) {
+export function getNodeOrder(mode = RUN_MODES.openaiRegister, options = {}) {
   const runMode = normalizeRunMode(mode);
   if (isOpenAiReauthorizeMode(runMode)) {
     return [
@@ -215,10 +276,13 @@ export function getNodeOrder(mode = RUN_MODES.openaiRegister) {
   if (isXAiReauthorizeMode(runMode)) {
     return XAI_REAUTHORIZE_NODE_ORDER;
   }
+  if (isOpenAiPhoneFirstRegisterFlow(options.openAiRegisterFlow)) {
+    return PHONE_FIRST_REGISTER_NODE_ORDER;
+  }
   return EMAIL_REGISTER_NODE_ORDER;
 }
 
-export function getManualRetryPolicy(mode = RUN_MODES.openaiRegister, nodeName) {
+export function getManualRetryPolicy(mode = RUN_MODES.openaiRegister, nodeName, options = {}) {
   const runMode = normalizeRunMode(mode);
   const policies = isOpenAiReauthorizeMode(runMode)
     ? REAUTHORIZE_MANUAL_RETRY_POLICIES
@@ -226,6 +290,8 @@ export function getManualRetryPolicy(mode = RUN_MODES.openaiRegister, nodeName) 
       ? XAI_REGISTER_MANUAL_RETRY_POLICIES
       : isXAiReauthorizeMode(runMode)
         ? XAI_REAUTHORIZE_MANUAL_RETRY_POLICIES
+        : isOpenAiPhoneFirstRegisterFlow(options.openAiRegisterFlow)
+          ? PHONE_FIRST_REGISTER_MANUAL_RETRY_POLICIES
       : EMAIL_REGISTER_MANUAL_RETRY_POLICIES;
   return policies[nodeName] || {
     retryable: false,
@@ -243,6 +309,19 @@ export const EMAIL_REGISTER_NODE_ORDER = [
   SelectCodexAccountNode.name,
   AddPhoneNumberNode.name,
   WaitSmsVerificationCodeNode.name,
+  SubmitCodexConsentNode.name
+];
+
+export const PHONE_FIRST_REGISTER_NODE_ORDER = [
+  StartupInitializeNode.name,
+  OpenChatGptPhoneFirstNode.name,
+  PhoneFirstAddPhoneNumberNode.name,
+  CreatePasswordNode.name,
+  WaitSmsVerificationCodeNode.name,
+  FillAboutYouNode.name,
+  SelectCodexAccountNode.name,
+  PhoneFirstAddEmailNode.name,
+  WaitEmailVerificationCodeNode.name,
   SubmitCodexConsentNode.name
 ];
 
@@ -293,6 +372,19 @@ const EMAIL_REGISTER_MANUAL_RETRY_POLICIES = Object.freeze({
   [SelectCodexAccountNode.name]: RETRY_DIRECT,
   [AddPhoneNumberNode.name]: RETRY_DIRECT,
   [WaitSmsVerificationCodeNode.name]: retryFromNode(SelectCodexAccountNode.name),
+  [SubmitCodexConsentNode.name]: retryFromNode(SelectCodexAccountNode.name)
+});
+
+const PHONE_FIRST_REGISTER_MANUAL_RETRY_POLICIES = Object.freeze({
+  [StartupInitializeNode.name]: RETRY_DIRECT,
+  [OpenChatGptPhoneFirstNode.name]: RETRY_REFRESH,
+  [PhoneFirstAddPhoneNumberNode.name]: RETRY_DIRECT,
+  [CreatePasswordNode.name]: RETRY_REFRESH,
+  [WaitSmsVerificationCodeNode.name]: retryFromNode(OpenChatGptPhoneFirstNode.name),
+  [FillAboutYouNode.name]: RETRY_REFRESH,
+  [SelectCodexAccountNode.name]: RETRY_DIRECT,
+  [PhoneFirstAddEmailNode.name]: RETRY_REFRESH,
+  [WaitEmailVerificationCodeNode.name]: RETRY_REFRESH,
   [SubmitCodexConsentNode.name]: retryFromNode(SelectCodexAccountNode.name)
 });
 

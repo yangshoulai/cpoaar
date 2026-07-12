@@ -8,7 +8,8 @@ export class CreatePasswordNode extends RegisterNode {
   static name = "create_password";
   static statuses = {
     success: "password_created",
-    aboutYouReady: "password_created_about_you_ready"
+    aboutYouReady: "password_created_about_you_ready",
+    phoneVerificationReady: "password_created_phone_verification_ready"
   };
 
   constructor() {
@@ -28,6 +29,16 @@ export class CreatePasswordNode extends RegisterNode {
     await ctx.tabs.click("button[type='submit']");
     const waitResult = await waitForAnyCondition([
       {
+        name: "phone_code_input",
+        check: async () => {
+          const url = await ctx.tabs.getCurrentUrl();
+          if (!url.includes("/contact-verification") && !url.includes("/phone-verification")) {
+            return null;
+          }
+          return ctx.tabs.query("input[name='code'], input[name='name']");
+        }
+      },
+      {
         name: "email_code_input",
         check: () => ctx.tabs.query("input[name='code']")
       },
@@ -43,13 +54,19 @@ export class CreatePasswordNode extends RegisterNode {
       }
     ], {
       timeoutMs: 30000,
-      label: "创建密码后等待邮箱验证码页或资料页"
+      label: "创建密码后等待验证码页或资料页"
     });
     if (!waitResult.matched) {
-      return NodeResult.fail("password_create_failed", `创建密码后未进入邮箱验证码页或资料页: ${await ctx.tabs.getCurrentUrl()}`);
+      return NodeResult.fail("password_create_failed", `创建密码后未进入验证码页或资料页: ${await ctx.tabs.getCurrentUrl()}`);
     }
     if (waitResult.name === "about_you") {
       return NodeResult.ok(CreatePasswordNode.statuses.aboutYouReady, {
+        currentUrl: await ctx.tabs.getCurrentUrl()
+      });
+    }
+    if (waitResult.name === "phone_code_input") {
+      return NodeResult.ok(CreatePasswordNode.statuses.phoneVerificationReady, {
+        phoneSubmittedAt: new Date().toISOString(),
         currentUrl: await ctx.tabs.getCurrentUrl()
       });
     }

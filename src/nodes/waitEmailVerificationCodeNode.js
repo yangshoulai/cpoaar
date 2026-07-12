@@ -38,7 +38,7 @@ export class WaitEmailVerificationCodeNode extends RegisterNode {
       },
       {
         name: "code_input",
-        check: () => ctx.tabs.query("input[name='code']")
+        check: () => ctx.tabs.query("input[name='code'], input[type='code']")
       },
       {
         name: "one_time_code_login",
@@ -113,8 +113,9 @@ export class WaitEmailVerificationCodeNode extends RegisterNode {
       const code = message.verificationCode;
       ctx.state.account.emailVerificationCode = code;
       logger.info("邮箱验证码已获取", { code });
-      await ctx.tabs.fill("input[name='code']", code);
-      await ctx.tabs.click("button[type='submit'][value='validate']");
+      const inputSelector = await resolveEmailCodeInputSelector(ctx);
+      await ctx.tabs.fill(inputSelector, code);
+      await clickEmailCodeSubmitButton(ctx);
 
       const submitResult = await waitForAnyCondition([
         {
@@ -175,7 +176,7 @@ export class WaitEmailVerificationCodeNode extends RegisterNode {
       if (submitResult.name === "invalid_code") {
         logger.warn("邮箱验证码无效，点击重新发送后继续等待");
         sentAfter = new Date().toISOString();
-        await ctx.tabs.click("button[type='submit'][value='resend']");
+        await clickEmailCodeResendButton(ctx);
         continue;
       }
       if (submitResult.name === "account_deactivated") {
@@ -194,6 +195,31 @@ export class WaitEmailVerificationCodeNode extends RegisterNode {
     }
 
     return NodeResult.fail("email_verification_code_timeout", `等待邮箱验证码超时: ${timeoutMs / 1000} 秒`);
+  }
+}
+
+async function resolveEmailCodeInputSelector(ctx) {
+  if (await ctx.tabs.query("input[name='code']")) {
+    return "input[name='code']";
+  }
+  return "input[type='code']";
+}
+
+async function clickEmailCodeSubmitButton(ctx) {
+  if (await ctx.tabs.query("button[type='submit'][value='validate']")) {
+    await ctx.tabs.click("button[type='submit'][value='validate']");
+    return;
+  }
+  await ctx.tabs.click("button[type='submit']");
+}
+
+async function clickEmailCodeResendButton(ctx) {
+  if (await ctx.tabs.query("button[type='submit'][value='resend']")) {
+    await ctx.tabs.click("button[type='submit'][value='resend']");
+    return;
+  }
+  if (await ctx.tabs.query("button[value='resend']")) {
+    await ctx.tabs.click("button[value='resend']");
   }
 }
 

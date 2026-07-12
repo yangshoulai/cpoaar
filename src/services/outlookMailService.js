@@ -124,12 +124,12 @@ export class OutlookMailEmailService {
     logger.info("OutlookMail 初始化完成");
   }
 
-  async generateEmailAddress() {
+  async generateEmailAddress(options = {}) {
     await this.initialize();
     if (this.config.useTempEmail) {
       return this._generateTempEmail();
     }
-    return this._allocateOutlookAccount();
+    return this._allocateOutlookAccount(options);
   }
 
   async listGroups() {
@@ -309,14 +309,28 @@ export class OutlookMailEmailService {
     };
   }
 
-  async _allocateOutlookAccount() {
+  async _allocateOutlookAccount(options = {}) {
     const groupId = this.config.outlook.poolGroupId;
     const listPayload = await this._request("/api/accounts", {
       query: { group_id: groupId }
     });
-    const first = listPayload?.accounts?.[0];
+    const excludedEmails = new Set((options.excludedEmailAddresses || [])
+      .map((email) => normalizeEmailAddress(email))
+      .filter(Boolean));
+    const excludedAccountIds = new Set((options.excludedAccountIds || [])
+      .map((id) => String(id || "").trim())
+      .filter(Boolean));
+    const accounts = Array.isArray(listPayload?.accounts) ? listPayload.accounts : [];
+    const first = accounts.find((account) => {
+      const email = normalizeEmailAddress(account.email);
+      const accountId = String(account.id || "").trim();
+      return !excludedEmails.has(email) && !excludedAccountIds.has(accountId);
+    });
     if (!first?.id) {
-      throw new Error(`Outlook 邮箱池为空: group_id=${groupId}`);
+      const excludedText = [...excludedEmails].join(", ") || [...excludedAccountIds].join(", ");
+      throw new Error(excludedText
+        ? `Outlook 邮箱池没有可避开已缓存邮箱的新账号: group_id=${groupId}, excluded=${excludedText}`
+        : `Outlook 邮箱池为空: group_id=${groupId}`);
     }
     const detailPayload = await this._request(`/api/accounts/${encodeURIComponent(first.id)}`);
     const account = detailPayload?.account || first;

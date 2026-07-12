@@ -49,11 +49,14 @@ export class SubmitCodexConsentNode extends RegisterNode {
       });
     }
 
-    await ctx.services.emailService.callback(ctx.state.emailAccount, true);
+    if (ctx.state.emailAccount) {
+      await ctx.services.emailService.callback(ctx.state.emailAccount, true);
+    }
     if (isOpenAiRegisterMode(ctx.config.register?.mode)) {
       await appendRegisterHistory({
         accountType: ACCOUNT_TYPES.openai,
         flowMode: RUN_MODES.openaiRegister,
+        registerFlow: ctx.state.openAiRegisterFlow || ctx.config.register?.openAiRegisterFlow || "",
         emailAddress: ctx.state.account?.emailAddress || "",
         mobile: ctx.state.account?.mobile || "",
         smsProvider: ctx.state.smsMobileNumber?.attributes?.provider || "",

@@ -1,13 +1,14 @@
 import { TabController } from "../core/browser.js";
 import { FlowRunner, createInitialSnapshot } from "../core/flow.js";
 import { STORAGE_KEYS, clearLogs, clearSnapshot, loadConfig, loadLogs, loadOutlookGroups, loadRegisterHistory, loadSnapshot, saveConfig, saveOutlookGroups, saveSnapshot } from "../core/storage.js";
-import { normalizeConfig, validateConfig } from "../core/config.js";
+import { getActiveRuntimeConfig, normalizeConfig, validateConfig } from "../core/config.js";
 import {
   RUN_MODES,
   getAccountTypeByMode,
   getAccountTypeLabel,
   getRunModeConfigGroups,
   getRunModeLabel,
+  isOpenAiMode,
   isOpenAiRegisterMode,
   isReauthorizeMode,
   isXAiReauthorizeMode,
@@ -19,8 +20,10 @@ import { deleteRegisteredAccount } from "../services/accountDeletionService.js";
 import { SmsActivationStore } from "../services/smsActivationStore.js";
 import { buildRegisterFlow, getManualRetryPolicy, getNodeOrder } from "../flow/registerFlowFactory.js";
 import { HERO_SMS_COUNTRIES, SMS_BOWER_COUNTRIES } from "../data/smsCountries.js";
+import { OPENAI_REGISTER_FLOWS, normalizeOpenAiRegisterFlow } from "../core/openAiRegisterFlows.js";
 
 const logger = createLogger("ui");
+const OPENAI_OAUTH_NODE_NAME = "select_codex_account";
 const dom = {
   themeToggleButton: document.querySelector("#themeToggleButton"),
   registerModeSelect: document.querySelector("#registerModeSelect"),
@@ -70,65 +73,86 @@ const CONFIG_SCHEMAS = {
       textField("固定密码", `${basePath}.specifiedPassword`, "关闭随机密码时使用。", () => getConfigValue(appConfig, `${basePath}.randomPassword`) === false)
     ];
   },
-  httpService: [
-    section("HTTP"),
-    numberField("默认超时", "httpService.defaultTimeout", "秒")
-  ],
-  emailService: [
-    section("邮箱服务"),
-    selectField("服务提供者", "emailService.provider", [["outlook_mail", "OutlookMail"]]),
-    textField("接口地址", "emailService.providers.outlook_mail.baseUrl"),
-    textField("管理员密码", "emailService.providers.outlook_mail.adminPassword"),
-    numberField("认证缓存时长", "emailService.providers.outlook_mail.authCacheTtlMinutes", "分钟"),
-    actionField("清除认证信息", "清除 OutlookMail 登录缓存和相关 Cookie，下次操作会重新认证。", clearOutlookMailAuthentication),
-    checkboxField("使用临时邮箱", "emailService.providers.outlook_mail.useTempEmail"),
-    section("临时邮箱", () => getConfigValue(appConfig, "emailService.providers.outlook_mail.useTempEmail") === true),
-    selectField("临时邮箱提供者", "emailService.providers.outlook_mail.tempEmail.provider", [["cloudflare", "Cloudflare"]], "", () => getConfigValue(appConfig, "emailService.providers.outlook_mail.useTempEmail") === true),
-    textField("Channel ID", "emailService.providers.outlook_mail.tempEmail.channelId", "", () => getConfigValue(appConfig, "emailService.providers.outlook_mail.useTempEmail") === true),
-    textField("临时邮箱域名", "emailService.providers.outlook_mail.tempEmail.domain", "", () => getConfigValue(appConfig, "emailService.providers.outlook_mail.useTempEmail") === true),
-    section("Outlook 邮箱池", () => getConfigValue(appConfig, "emailService.providers.outlook_mail.useTempEmail") !== true),
-    actionField("刷新分组", "从 OutlookMail 服务获取最新分组列表。", refreshOutlookGroups, () => getConfigValue(appConfig, "emailService.providers.outlook_mail.useTempEmail") !== true),
-    dynamicSelectField("邮箱池分组", "emailService.providers.outlook_mail.outlook.poolGroupId", getOutlookGroupOptions, "", () => getConfigValue(appConfig, "emailService.providers.outlook_mail.useTempEmail") !== true),
-    dynamicSelectField("已注册分组", "emailService.providers.outlook_mail.outlook.registeredGroupId", getOutlookGroupOptions, "", () => getConfigValue(appConfig, "emailService.providers.outlook_mail.useTempEmail") !== true),
-    dynamicSelectField("已删除分组", "emailService.providers.outlook_mail.outlook.deletedGroupId", getOutlookGroupOptions, "", () => getConfigValue(appConfig, "emailService.providers.outlook_mail.useTempEmail") !== true),
-    checkboxField("重新授权删除账号时移动邮箱", "emailService.providers.outlook_mail.outlook.moveEmailOnReauthorizeDelete", () => getConfigValue(appConfig, "emailService.providers.outlook_mail.useTempEmail") !== true)
-  ],
-  smsService: [
-    section("短信服务"),
-    selectField("服务提供者", "smsService.provider", [
-      ["", "不启用"],
-      ["hero_sms", "HeroSMS"],
-      ["sms_bower", "SMSBower"],
-      ["manual", "手动模式"]
-    ]),
-    section("HeroSMS", () => getConfigValue(appConfig, "smsService.provider") === "hero_sms"),
-    textField("接口地址", "smsService.providers.hero_sms.baseUrl", "", () => getConfigValue(appConfig, "smsService.provider") === "hero_sms"),
-    textField("API Key", "smsService.providers.hero_sms.apiKey", "", () => getConfigValue(appConfig, "smsService.provider") === "hero_sms"),
-    balanceActionField("余额", "查询当前 HeroSMS 账户余额。", queryHeroSmsBalance, () => getConfigValue(appConfig, "smsService.provider") === "hero_sms"),
-    countryField("目标国家", "smsService.providers.hero_sms.countryId", HERO_SMS_COUNTRIES, "hero_sms", () => getConfigValue(appConfig, "smsService.provider") === "hero_sms"),
-    priceField("最大价格", "smsService.providers.hero_sms.maxPrice", "hero_sms", "max", "", () => getConfigValue(appConfig, "smsService.provider") === "hero_sms"),
-    numberField("验证码超时", "smsService.providers.hero_sms.verificationCodeWaitTimeout", "秒", () => getConfigValue(appConfig, "smsService.provider") === "hero_sms"),
-    section("SMSBower", () => getConfigValue(appConfig, "smsService.provider") === "sms_bower" || getConfigValue(appConfig, "smsService.provider") === "smsbower"),
-    textField("接口地址", "smsService.providers.sms_bower.baseUrl", "", () => getConfigValue(appConfig, "smsService.provider") === "sms_bower" || getConfigValue(appConfig, "smsService.provider") === "smsbower"),
-    textField("API Key", "smsService.providers.sms_bower.apiKey", "", () => getConfigValue(appConfig, "smsService.provider") === "sms_bower" || getConfigValue(appConfig, "smsService.provider") === "smsbower"),
-    countryField("目标国家", "smsService.providers.sms_bower.countryId", SMS_BOWER_COUNTRIES, "sms_bower", () => getConfigValue(appConfig, "smsService.provider") === "sms_bower" || getConfigValue(appConfig, "smsService.provider") === "smsbower"),
-    numberField("最低价格", "smsService.providers.sms_bower.minPrice", "", () => getConfigValue(appConfig, "smsService.provider") === "sms_bower" || getConfigValue(appConfig, "smsService.provider") === "smsbower"),
-    priceField("最高价格", "smsService.providers.sms_bower.maxPrice", "sms_bower", "max", "", () => getConfigValue(appConfig, "smsService.provider") === "sms_bower" || getConfigValue(appConfig, "smsService.provider") === "smsbower"),
-    numberField("验证码超时", "smsService.providers.sms_bower.verificationCodeWaitTimeout", "秒", () => getConfigValue(appConfig, "smsService.provider") === "sms_bower" || getConfigValue(appConfig, "smsService.provider") === "smsbower"),
-    numberField("激活有效期", "smsService.providers.sms_bower.activationValidSeconds", "秒", () => getConfigValue(appConfig, "smsService.provider") === "sms_bower" || getConfigValue(appConfig, "smsService.provider") === "smsbower"),
-    section("手动模式", () => getConfigValue(appConfig, "smsService.provider") === "manual"),
-    textField("手机号", "smsService.providers.manual.mobileNumber", "以 + 开头；不填 + 会自动添加。", () => getConfigValue(appConfig, "smsService.provider") === "manual")
-  ],
-  accountManagementService: [
-    section("账号服务"),
-    selectField("服务提供者", "accountManagementService.provider", [["cpa", "CPA"]]),
-    textField("接口地址", "accountManagementService.providers.cpa.baseUrl"),
-    textField("管理密钥", "accountManagementService.providers.cpa.secretKey")
-  ],
+  httpService: () => {
+    const basePath = getActiveServiceConfigPath("httpService");
+    return [
+      section(`${getAccountTypeLabel(getCurrentAccountType())} HTTP`),
+      numberField("默认超时", `${basePath}.defaultTimeout`, "秒")
+    ];
+  },
+  emailService: () => {
+    const basePath = getActiveServiceConfigPath("emailService");
+    const outlookPath = `${basePath}.providers.outlook_mail`;
+    const useTempEmail = () => getConfigValue(appConfig, `${outlookPath}.useTempEmail`) === true;
+    return [
+      section(`${getAccountTypeLabel(getCurrentAccountType())} 邮箱服务`),
+      selectField("服务提供者", `${basePath}.provider`, [["outlook_mail", "OutlookMail"]]),
+      textField("接口地址", `${outlookPath}.baseUrl`),
+      textField("管理员密码", `${outlookPath}.adminPassword`),
+      numberField("认证缓存时长", `${outlookPath}.authCacheTtlMinutes`, "分钟"),
+      actionField("清除认证信息", "清除当前账号类型的 OutlookMail 登录缓存和相关 Cookie，下次操作会重新认证。", clearOutlookMailAuthentication),
+      checkboxField("使用临时邮箱", `${outlookPath}.useTempEmail`),
+      section("临时邮箱", useTempEmail),
+      selectField("临时邮箱提供者", `${outlookPath}.tempEmail.provider`, [["cloudflare", "Cloudflare"]], "", useTempEmail),
+      textField("Channel ID", `${outlookPath}.tempEmail.channelId`, "", useTempEmail),
+      textField("临时邮箱域名", `${outlookPath}.tempEmail.domain`, "", useTempEmail),
+      section("Outlook 邮箱池", () => !useTempEmail()),
+      actionField("刷新分组", "从当前账号类型的 OutlookMail 服务获取最新分组列表。", refreshOutlookGroups, () => !useTempEmail()),
+      dynamicSelectField("邮箱池分组", `${outlookPath}.outlook.poolGroupId`, getOutlookGroupOptions, "", () => !useTempEmail()),
+      dynamicSelectField("已注册分组", `${outlookPath}.outlook.registeredGroupId`, getOutlookGroupOptions, "", () => !useTempEmail()),
+      dynamicSelectField("已删除分组", `${outlookPath}.outlook.deletedGroupId`, getOutlookGroupOptions, "", () => !useTempEmail()),
+      checkboxField("重新授权删除账号时移动邮箱", `${outlookPath}.outlook.moveEmailOnReauthorizeDelete`, () => !useTempEmail())
+    ];
+  },
+  smsService: () => {
+    const basePath = getActiveServiceConfigPath("smsService");
+    const provider = () => getConfigValue(appConfig, `${basePath}.provider`);
+    const isHeroSms = () => provider() === "hero_sms";
+    const isSmsBower = () => provider() === "sms_bower" || provider() === "smsbower";
+    return [
+      section(`${getAccountTypeLabel(getCurrentAccountType())} 短信服务`),
+      selectField("服务提供者", `${basePath}.provider`, [
+        ["", "不启用"],
+        ["hero_sms", "HeroSMS"],
+        ["sms_bower", "SMSBower"],
+        ["manual", "手动模式"]
+      ]),
+      section("HeroSMS", isHeroSms),
+      textField("接口地址", `${basePath}.providers.hero_sms.baseUrl`, "", isHeroSms),
+      textField("API Key", `${basePath}.providers.hero_sms.apiKey`, "", isHeroSms),
+      balanceActionField("余额", "查询当前 HeroSMS 账户余额。", queryHeroSmsBalance, isHeroSms),
+      countryField("目标国家", `${basePath}.providers.hero_sms.countryId`, HERO_SMS_COUNTRIES, "hero_sms", isHeroSms),
+      priceField("最大价格", `${basePath}.providers.hero_sms.maxPrice`, "hero_sms", "max", "", isHeroSms),
+      numberField("验证码超时", `${basePath}.providers.hero_sms.verificationCodeWaitTimeout`, "秒", isHeroSms),
+      section("SMSBower", isSmsBower),
+      textField("接口地址", `${basePath}.providers.sms_bower.baseUrl`, "", isSmsBower),
+      textField("API Key", `${basePath}.providers.sms_bower.apiKey`, "", isSmsBower),
+      countryField("目标国家", `${basePath}.providers.sms_bower.countryId`, SMS_BOWER_COUNTRIES, "sms_bower", isSmsBower),
+      numberField("最低价格", `${basePath}.providers.sms_bower.minPrice`, "", isSmsBower),
+      priceField("最高价格", `${basePath}.providers.sms_bower.maxPrice`, "sms_bower", "max", "", isSmsBower),
+      numberField("验证码超时", `${basePath}.providers.sms_bower.verificationCodeWaitTimeout`, "秒", isSmsBower),
+      numberField("激活有效期", `${basePath}.providers.sms_bower.activationValidSeconds`, "秒", isSmsBower),
+      section("手动模式", () => provider() === "manual"),
+      textField("手机号", `${basePath}.providers.manual.mobileNumber`, "以 + 开头；不填 + 会自动添加。", () => provider() === "manual")
+    ];
+  },
+  accountManagementService: () => {
+    const basePath = getActiveServiceConfigPath("accountManagementService");
+    return [
+      section(`${getAccountTypeLabel(getCurrentAccountType())} 账号服务`),
+      selectField("服务提供者", `${basePath}.provider`, [["cpa", "CPA"]]),
+      textField("接口地址", `${basePath}.providers.cpa.baseUrl`),
+      textField("管理密钥", `${basePath}.providers.cpa.secretKey`)
+    ];
+  },
   register: [
     section("批量注册"),
     batchCountField("注册数量", "register.batchCount", "失败会记录日志并继续下一轮；停止按钮会终止后续轮次。"),
     section("注册流程"),
+    selectField("注册流程", "register.openAiRegisterFlow", [
+      [OPENAI_REGISTER_FLOWS.emailFirst, "先邮箱后绑定手机号"],
+      [OPENAI_REGISTER_FLOWS.phoneFirst, "先手机号后邮箱绑定"]
+    ], "", () => isOpenAiRegisterMode(getRegisterMode())),
     numberField("邮箱验证码超时", "register.verificationCodeWaitTimeout", "秒"),
     numberField("手机号重试次数", "register.phoneNumberRetryAttempts", "次", () => isOpenAiRegisterMode(getRegisterMode())),
     numberField("短信 OAuth 重试", "register.smsVerificationRetryAttempts", "次", () => isOpenAiRegisterMode(getRegisterMode())),
@@ -165,16 +189,19 @@ const STATUS_LABELS = {
 const RESULT_STATUS_LABELS = {
   startup_initialized: "初始化完成",
   chatgpt_tab_opened: "ChatGPT 已打开",
+  chatgpt_phone_first_opened: "ChatGPT 手机注册已打开",
   email_submitted: "邮箱已提交",
   email_submitted_sms_verification_ready: "进入短信验证",
   email_submitted_create_password_ready: "需要创建密码",
   password_created: "密码已创建",
   password_created_about_you_ready: "密码已创建，进入资料页",
+  password_created_phone_verification_ready: "密码已创建，进入短信验证",
   email_verification_retry_current_node: "重新执行邮箱验证",
   email_verified: "邮箱已验证",
   email_verified_chatgpt_ready: "ChatGPT 已登录",
   codex_oauth_needs_phone: "需要手机号验证",
   codex_oauth_consent_ready: "Consent 已就绪",
+  codex_oauth_add_email_ready: "需要绑定邮箱",
   reauthorize_account_deactivated_ready: "账号已停用",
   reauthorize_account_deactivated: "账号已停用",
   reauthorize_delete_account_ready: "准备删除账号",
@@ -194,8 +221,12 @@ const RESULT_STATUS_LABELS = {
   codex_oauth_email_verification_ready: "OAuth 邮箱验证",
   phone_waited_oauth_reauth_required: "需要重新 OAuth",
   phone_submitted: "手机号已提交",
+  phone_first_phone_submitted: "手机号已提交",
   sms_verification_retry_select_codex_account: "重试 OAuth",
+  sms_verification_whatsapp_detected: "验证码已走 WhatsApp",
   phone_verified: "手机号已验证",
+  phone_verified_about_you_ready: "手机号已验证，进入资料页",
+  phone_first_email_submitted: "绑定邮箱已提交",
   codex_account_exported: "账号已导出",
   xai_email_submitted: "xAI 邮箱已提交",
   xai_email_verified: "xAI 邮箱已验证",
@@ -222,6 +253,7 @@ const RESULT_STATUS_LABELS = {
   xai_auth_file_patch_failed: "xAI 认证文件修补失败",
   xai_device_auth_file_patched: "xAI Device 认证文件已修补",
   chatgpt_tab_open_failed: "打开失败",
+  phone_first_open_failed: "打开手机注册失败",
   email_submit_failed: "邮箱提交失败",
   email_verification_unexpected_url: "邮箱验证页面异常",
   password_create_failed: "创建密码失败",
@@ -235,6 +267,7 @@ const RESULT_STATUS_LABELS = {
   codex_oauth_unexpected_url: "OAuth 页面异常",
   phone_submit_failed: "手机号提交失败",
   phone_submit_error: "手机号错误",
+  phone_first_add_email_failed: "绑定邮箱失败",
   phone_verification_unexpected_url: "手机号验证页异常",
   phone_verification_failed: "手机号验证失败",
   sms_service_not_configured: "未配置短信服务",
@@ -262,7 +295,7 @@ const LOG_LEVEL_WEIGHT = {
 };
 
 let appConfig = normalizeConfig(await loadConfig());
-let flow = buildRegisterFlow(getRegisterMode());
+let flow = buildRegisterFlow(getRegisterMode(), buildFlowOptions());
 let activeConfigGroup = "emailService";
 let runner = null;
 let saveTimer = null;
@@ -563,7 +596,7 @@ async function retryCurrentNode() {
   if (!ensureSnapshotMatchesCurrentMode(snapshot, "重试当前节点")) {
     return;
   }
-  const retryPolicy = getManualRetryPolicy(getRegisterMode(), snapshot.currentNode);
+  const retryPolicy = resolveManualRetryPolicy(snapshot);
   if (!retryPolicy.retryable) {
     showConfigMessage(retryPolicy.message || "当前节点不支持重试", true);
     return;
@@ -593,7 +626,8 @@ async function retryCurrentNode() {
     node: snapshot.currentNode,
     retryStartNode,
     prepare: retryPolicy.prepare,
-    startUrl
+    startUrl,
+    reason: retryPolicy.reason || ""
   });
   try {
     await currentRunner.run(retryStartNode);
@@ -1163,7 +1197,7 @@ function ensureXAiReauthorizePassword(password) {
 }
 
 function resolveManualEmailMode() {
-  return getConfigValue(appConfig, "emailService.providers.outlook_mail.useTempEmail") === true
+  return getConfigValue(appConfig, `${getActiveServiceConfigPath("emailService")}.providers.outlook_mail.useTempEmail`) === true
     ? "temp"
     : "outlook";
 }
@@ -1255,19 +1289,23 @@ function toTime(value) {
 function createRunContext(tabs, snapshot, state) {
   const runMode = getRegisterMode();
   const accountType = getAccountTypeByMode(runMode);
+  const openAiRegisterFlow = getOpenAiRegisterFlow();
+  const runtimeConfig = getActiveRuntimeConfig(appConfig);
   return {
-    config: appConfig,
-    services: createServices(appConfig),
+    config: runtimeConfig,
+    services: createServices(runtimeConfig),
     tabs,
     state: {
       ...(state || {}),
       runMode,
-      accountType
+      accountType,
+      openAiRegisterFlow
     },
     snapshot: {
       ...snapshot,
       runMode,
       accountType,
+      openAiRegisterFlow,
       status: "running",
       nodeResults: snapshot.nodeResults || {},
       nodeStarts: snapshot.nodeStarts || {}
@@ -1277,6 +1315,34 @@ function createRunContext(tabs, snapshot, state) {
 
 function isFlowBusy() {
   return Boolean(batchRunState) || lastSnapshot?.status === "running";
+}
+
+function resolveManualRetryPolicy(snapshot = {}) {
+  const nodeName = snapshot.currentNode || "";
+  if (shouldRestartRetryFromOpenAiOAuth(snapshot)) {
+    return {
+      retryable: true,
+      prepare: "direct",
+      startNode: OPENAI_OAUTH_NODE_NAME,
+      reason: "after_openai_oauth"
+    };
+  }
+  return nodeName
+    ? getManualRetryPolicy(getRegisterMode(), nodeName, buildFlowOptions())
+    : { retryable: false };
+}
+
+function shouldRestartRetryFromOpenAiOAuth(snapshot = {}) {
+  const currentMode = getRegisterMode();
+  if (!isOpenAiMode(currentMode)) {
+    return false;
+  }
+  const currentNode = snapshot.currentNode || "";
+  if (!currentNode || currentNode === OPENAI_OAUTH_NODE_NAME) {
+    return false;
+  }
+  const oauthResult = snapshot.nodeResults?.[OPENAI_OAUTH_NODE_NAME];
+  return oauthResult?.status === "success";
 }
 
 function buildStoppedSnapshot(snapshot = {}, error = "流程已停止") {
@@ -1344,7 +1410,7 @@ async function updateRegisterMode(mode) {
 }
 
 function rebuildFlowForMode() {
-  flow = buildRegisterFlow(getRegisterMode());
+  flow = buildRegisterFlow(getRegisterMode(), buildFlowOptions());
 }
 
 function renderConfigTabs() {
@@ -1732,6 +1798,11 @@ function handleConfigControlChange(field, value, rerender) {
   setConfigValue(appConfig, field.path, coerceConfigValue(field, value));
   if (field.path === "register.mode") {
     setConfigValue(appConfig, "register.mode", normalizeRunMode(getConfigValue(appConfig, "register.mode")));
+  }
+  if (field.path === "register.openAiRegisterFlow") {
+    setConfigValue(appConfig, "register.openAiRegisterFlow", normalizeOpenAiRegisterFlow(getConfigValue(appConfig, "register.openAiRegisterFlow")));
+  }
+  if (field.path === "register.mode" || field.path === "register.openAiRegisterFlow") {
     rebuildFlowForMode();
     renderModeSwitch();
     ensureActiveConfigGroup();
@@ -1762,12 +1833,18 @@ function coerceConfigValue(field, value) {
 }
 
 function getSmsProviderConfigPath(provider) {
-  return `smsService.providers.${normalizeSmsProvider(provider)}`;
+  return `${getActiveServiceConfigPath("smsService")}.providers.${normalizeSmsProvider(provider)}`;
+}
+
+function buildConfigWithActiveSmsProvider(provider) {
+  const nextConfig = JSON.parse(JSON.stringify(appConfig));
+  setConfigValue(nextConfig, `${getActiveServiceConfigPath("smsService")}.provider`, normalizeSmsProvider(provider));
+  return nextConfig;
 }
 
 function getFavoriteCountryIds(provider) {
   const normalizedProvider = normalizeSmsProvider(provider);
-  const values = getConfigValue(appConfig, `smsService.favoriteCountries.${normalizedProvider}`);
+  const values = getConfigValue(appConfig, `${getActiveServiceConfigPath("smsService")}.favoriteCountries.${normalizedProvider}`);
   return Array.isArray(values) ? values.map(String) : [];
 }
 
@@ -1795,13 +1872,7 @@ async function queryHeroSmsBalance() {
   heroSmsBalanceState.error = "";
   renderConfigForm();
   try {
-    const service = createServices({
-      ...appConfig,
-      smsService: {
-        ...appConfig.smsService,
-        provider: "hero_sms"
-      }
-    }).smsService;
+    const service = createServices(buildConfigWithActiveSmsProvider("hero_sms")).smsService;
     const balance = await service.getBalance();
     heroSmsBalanceState.balance = balance;
     heroSmsBalanceState.error = "";
@@ -1840,13 +1911,7 @@ async function querySmsPrices(provider) {
   renderConfigForm();
 
   try {
-    const service = createServices({
-      ...appConfig,
-      smsService: {
-        ...appConfig.smsService,
-        provider: normalizedProvider
-      }
-    }).smsService;
+    const service = createServices(buildConfigWithActiveSmsProvider(normalizedProvider)).smsService;
     const options = await service.getPriceOptions();
     if (smsPriceLookupState[normalizedProvider]?.requestId !== requestId) {
       return;
@@ -1914,10 +1979,10 @@ function renderSmsPriceOptions(provider) {
 function applySmsPriceOption(provider, option) {
   const normalizedProvider = normalizeSmsProvider(provider);
   if (normalizedProvider === "hero_sms") {
-    setConfigValue(appConfig, "smsService.providers.hero_sms.maxPrice", option.price);
+    setConfigValue(appConfig, `${getSmsProviderConfigPath("hero_sms")}.maxPrice`, option.price);
   } else if (normalizedProvider === "sms_bower") {
-    setConfigValue(appConfig, "smsService.providers.sms_bower.minPrice", option.price);
-    setConfigValue(appConfig, "smsService.providers.sms_bower.maxPrice", option.price);
+    setConfigValue(appConfig, `${getSmsProviderConfigPath("sms_bower")}.minPrice`, option.price);
+    setConfigValue(appConfig, `${getSmsProviderConfigPath("sms_bower")}.maxPrice`, option.price);
   }
   scheduleConfigSave();
   renderConfigForm();
@@ -1959,7 +2024,7 @@ function addFavoriteCountry(field) {
   if (favorites.includes(countryId)) {
     return;
   }
-  setConfigValue(appConfig, `smsService.favoriteCountries.${normalizeSmsProvider(field.provider)}`, [...favorites, countryId]);
+  setConfigValue(appConfig, `${getActiveServiceConfigPath("smsService")}.favoriteCountries.${normalizeSmsProvider(field.provider)}`, [...favorites, countryId]);
   scheduleConfigSave();
   renderConfigForm();
   showConfigMessage("常用国家已添加");
@@ -1967,7 +2032,7 @@ function addFavoriteCountry(field) {
 
 function removeFavoriteCountry(field, countryId) {
   const favorites = getFavoriteCountryIds(field.provider).filter((item) => item !== String(countryId));
-  setConfigValue(appConfig, `smsService.favoriteCountries.${normalizeSmsProvider(field.provider)}`, favorites);
+  setConfigValue(appConfig, `${getActiveServiceConfigPath("smsService")}.favoriteCountries.${normalizeSmsProvider(field.provider)}`, favorites);
   scheduleConfigSave();
   renderConfigForm();
   showConfigMessage("常用国家已删除");
@@ -2092,10 +2157,14 @@ async function importConfig(event) {
   try {
     appConfig = normalizeConfig(JSON.parse(await file.text()));
     await saveConfig(appConfig);
+    rebuildFlowForMode();
     applyTheme();
+    renderModeSwitch();
     renderConfigTabs();
     renderConfigForm();
     renderLogLevelControl();
+    renderSnapshot(lastSnapshot);
+    await renderHistoryPanel();
     showConfigMessage("配置导入成功，已自动保存");
   } catch (error) {
     showConfigMessage(`配置导入失败: ${error.message}`, true);
@@ -2143,9 +2212,7 @@ function updateRunButtons(snapshot) {
   const status = snapshot.status || "idle";
   const hasStarted = Boolean(snapshot.startedAt) || Object.keys(snapshot.nodeResults || {}).length > 0;
   const isRunning = status === "running" || Boolean(batchRunState);
-  const retryPolicy = snapshot.currentNode
-    ? getManualRetryPolicy(getRegisterMode(), snapshot.currentNode)
-    : { retryable: false };
+  const retryPolicy = resolveManualRetryPolicy(snapshot);
   const canContinue = hasStarted && !isRunning && status !== "success" && status !== "failed";
   const canRetry = hasStarted && !isRunning && status !== "success" && retryPolicy.retryable;
 
@@ -2158,7 +2225,7 @@ function updateRunButtons(snapshot) {
 
 function renderNodeGraph(snapshot) {
   dom.nodeGraph.innerHTML = "";
-  for (const nodeName of getNodeOrder(getRegisterMode())) {
+  for (const nodeName of getNodeOrder(getRegisterMode(), buildFlowOptions())) {
     const node = flow.getNode(nodeName);
     const result = snapshot.nodeResults?.[nodeName];
     let status = result?.status || "pending";
@@ -2361,6 +2428,16 @@ function getRegisterMode() {
   return normalizeRunMode(getConfigValue(appConfig, "register.mode"));
 }
 
+function getOpenAiRegisterFlow() {
+  return normalizeOpenAiRegisterFlow(getConfigValue(appConfig, "register.openAiRegisterFlow"));
+}
+
+function buildFlowOptions() {
+  return {
+    openAiRegisterFlow: getOpenAiRegisterFlow()
+  };
+}
+
 function getRegisterBatchCount() {
   return normalizeBatchCount(getConfigValue(appConfig, "register.batchCount"));
 }
@@ -2383,6 +2460,10 @@ function getActiveAccountProfilePath() {
   return `accountProfiles.${getCurrentAccountType()}`;
 }
 
+function getActiveServiceConfigPath(groupName) {
+  return `serviceConfigs.${getCurrentAccountType()}.${groupName}`;
+}
+
 function ensureActiveConfigGroup() {
   const allowedGroups = getRunModeConfigGroups(getRegisterMode());
   if (!allowedGroups.includes(activeConfigGroup)) {
@@ -2393,14 +2474,25 @@ function ensureActiveConfigGroup() {
 function ensureSnapshotMatchesCurrentMode(snapshot, actionLabel) {
   const snapshotMode = resolveSnapshotRunMode(snapshot);
   const currentMode = getRegisterMode();
-  if (snapshotMode === currentMode) {
-    return true;
+  if (snapshotMode !== currentMode) {
+    showConfigMessage(
+      `${actionLabel}失败：当前快照属于${getRunModeLabel(snapshotMode)}模式，请切换回该模式后再操作`,
+      true
+    );
+    return false;
   }
-  showConfigMessage(
-    `${actionLabel}失败：当前快照属于${getRunModeLabel(snapshotMode)}模式，请切换回该模式后再操作`,
-    true
-  );
-  return false;
+  if (isOpenAiRegisterMode(currentMode)) {
+    const snapshotFlow = resolveSnapshotOpenAiRegisterFlow(snapshot);
+    const currentFlow = getOpenAiRegisterFlow();
+    if (snapshotFlow !== currentFlow) {
+      showConfigMessage(
+        `${actionLabel}失败：当前快照属于${formatOpenAiRegisterFlowLabel(snapshotFlow)}流程，请切换回该注册流程后再操作`,
+        true
+      );
+      return false;
+    }
+  }
+  return true;
 }
 
 function resolveSnapshotRunMode(snapshot = {}) {
@@ -2425,6 +2517,28 @@ function resolveSnapshotRunMode(snapshot = {}) {
     return RUN_MODES.openaiReauthorize;
   }
   return RUN_MODES.openaiRegister;
+}
+
+function resolveSnapshotOpenAiRegisterFlow(snapshot = {}) {
+  const explicitFlow = snapshot.openAiRegisterFlow || snapshot.state?.openAiRegisterFlow;
+  if (explicitFlow) {
+    return normalizeOpenAiRegisterFlow(explicitFlow);
+  }
+  if ([
+    "open_chatgpt_phone_first",
+    "phone_first_add_phone_number",
+    "phone_first_add_email"
+  ].includes(snapshot.currentNode)) {
+    return OPENAI_REGISTER_FLOWS.phoneFirst;
+  }
+  return OPENAI_REGISTER_FLOWS.emailFirst;
+}
+
+function formatOpenAiRegisterFlowLabel(value) {
+  const flow = normalizeOpenAiRegisterFlow(value);
+  return flow === OPENAI_REGISTER_FLOWS.phoneFirst
+    ? "先手机号后邮箱绑定"
+    : "先邮箱后绑定手机号";
 }
 
 function setConfigValue(config, path, value) {
@@ -2471,9 +2585,9 @@ async function clearOutlookMailAuthentication() {
 
 function getOutlookGroupOptions() {
   const currentIds = [
-    getConfigValue(appConfig, "emailService.providers.outlook_mail.outlook.poolGroupId"),
-    getConfigValue(appConfig, "emailService.providers.outlook_mail.outlook.registeredGroupId"),
-    getConfigValue(appConfig, "emailService.providers.outlook_mail.outlook.deletedGroupId")
+    getConfigValue(appConfig, `${getActiveServiceConfigPath("emailService")}.providers.outlook_mail.outlook.poolGroupId`),
+    getConfigValue(appConfig, `${getActiveServiceConfigPath("emailService")}.providers.outlook_mail.outlook.registeredGroupId`),
+    getConfigValue(appConfig, `${getActiveServiceConfigPath("emailService")}.providers.outlook_mail.outlook.deletedGroupId`)
   ].filter((value) => value !== undefined && value !== null && value !== "");
   const options = outlookGroups.map((group) => [
     String(group.id),
