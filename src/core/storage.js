@@ -85,6 +85,30 @@ export async function deleteRegisterHistory(id) {
   return nextHistory;
 }
 
+export async function deleteRegisterHistoryRecord(record) {
+  const target = normalizeRegisterHistoryRecord(record);
+  const history = await loadRegisterHistory();
+  let removed = false;
+  const nextHistory = history.filter((item) => {
+    if (removed) {
+      return true;
+    }
+    const matched = target.id
+      ? item.id === target.id
+      : isSameRegisterHistoryRecord(item, target);
+    if (matched) {
+      removed = true;
+      return false;
+    }
+    return true;
+  });
+  if (!removed) {
+    throw new Error("未找到本地历史记录");
+  }
+  await saveRegisterHistory(nextHistory);
+  return nextHistory;
+}
+
 export async function clearRegisterHistoryByAccountType(accountType) {
   const normalizedType = normalizeAccountType(accountType);
   const history = await loadRegisterHistory();
@@ -139,4 +163,14 @@ function normalizeRegisterHistoryRecord(record) {
     accountType,
     flowMode
   };
+}
+
+function isSameRegisterHistoryRecord(record, target) {
+  if (!target.emailAddress && !target.registeredAt) {
+    return false;
+  }
+  return String(record.emailAddress || "") === String(target.emailAddress || "")
+    && String(record.registeredAt || "") === String(target.registeredAt || "")
+    && normalizeAccountType(record.accountType) === normalizeAccountType(target.accountType)
+    && normalizeRunMode(record.flowMode) === normalizeRunMode(target.flowMode);
 }

@@ -1,6 +1,6 @@
 import { TabController } from "../core/browser.js";
 import { FlowRunner, createInitialSnapshot } from "../core/flow.js";
-import { STORAGE_KEYS, clearLogs, clearRegisterHistoryByAccountType, clearSnapshot, loadConfig, loadLogs, loadOutlookGroups, loadRegisterHistory, loadSnapshot, saveConfig, saveOutlookGroups, saveSnapshot } from "../core/storage.js";
+import { STORAGE_KEYS, clearLogs, clearRegisterHistoryByAccountType, clearSnapshot, deleteRegisterHistoryRecord, loadConfig, loadLogs, loadOutlookGroups, loadRegisterHistory, loadSnapshot, saveConfig, saveOutlookGroups, saveSnapshot } from "../core/storage.js";
 import { getActiveRuntimeConfig, normalizeConfig, validateConfig } from "../core/config.js";
 import {
   RUN_MODES,
@@ -16,7 +16,6 @@ import {
 } from "../core/runModes.js";
 import { createLogger } from "../core/logger.js";
 import { createServices } from "../services/index.js";
-import { deleteRegisteredAccount } from "../services/accountDeletionService.js";
 import { SmsActivationStore } from "../services/smsActivationStore.js";
 import { buildRegisterFlow, getManualRetryPolicy, getNodeOrder } from "../flow/registerFlowFactory.js";
 import { HERO_SMS_COUNTRIES, SMS_BOWER_COUNTRIES } from "../data/smsCountries.js";
@@ -893,24 +892,22 @@ async function writeClipboardText(value) {
 }
 
 async function deleteHistoryRecord(record, button) {
-  if (!window.confirm(`确定删除历史账号？\n${record.emailAddress || ""}`)) {
+  if (!window.confirm(`确定删除本地历史记录？\n${record.emailAddress || ""}\n此操作不会删除邮箱或账号服务中的账号。`)) {
     return;
   }
   button.disabled = true;
   const originalText = button.textContent;
   button.textContent = "删除中";
   try {
-    await deleteRegisteredAccount(appConfig, record, {
-      reason: "历史记录手动删除"
-    });
-    showConfigMessage(`历史账号已删除：${record.emailAddress}`);
+    await deleteRegisterHistoryRecord(record);
+    showConfigMessage(`本地历史记录已删除：${record.emailAddress}`);
     await renderHistoryTable();
   } catch (error) {
     logger.warn("历史账号删除失败", {
       email: record.emailAddress,
       error: error.message
     });
-    showConfigMessage(`历史账号删除失败：${error.message}`, true);
+    showConfigMessage(`本地历史记录删除失败：${error.message}`, true);
     button.disabled = false;
     button.textContent = originalText;
   }
