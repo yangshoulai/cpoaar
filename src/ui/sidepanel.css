@@ -996,6 +996,22 @@ dd {
   text-align: right;
 }
 
+.history-table.selectable-history-table th:first-child,
+.history-table.selectable-history-table td:first-child {
+  width: 34px;
+  text-align: center;
+}
+
+.history-select-checkbox {
+  width: 15px;
+  min-width: 15px;
+  height: 15px;
+  min-height: 15px;
+  margin: 0;
+  vertical-align: middle;
+  accent-color: var(--accent);
+}
+
 .table-empty {
   padding: 16px 10px;
   color: var(--muted);
@@ -1150,6 +1166,16 @@ dd {
 
   .history-table th:nth-child(2),
   .history-table td:nth-child(2) {
+    display: none;
+  }
+
+  .history-table.selectable-history-table th:nth-child(2),
+  .history-table.selectable-history-table td:nth-child(2) {
+    display: table-cell;
+  }
+
+  .history-table.selectable-history-table th:nth-child(3),
+  .history-table.selectable-history-table td:nth-child(3) {
     display: none;
   }
 

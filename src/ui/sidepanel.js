@@ -310,6 +310,7 @@ const activationStore = new SmsActivationStore();
 let latestActivationRecord = await activationStore.getLatestActivation();
 let historyFilterValue = "";
 let historyPage = 1;
+const selectedXAiHistoryKeys = new Set();
 const HISTORY_PAGE_SIZE = 10;
 const BATCH_COUNT_PRESETS = Object.freeze([1, 5, 10, 20, 50, 100]);
 const smsPriceLookupState = {};
@@ -659,15 +660,19 @@ async function renderHistoryPanel() {
 
 async function renderHistoryTable() {
   const history = await loadRegisterHistory();
+  pruneXAiHistorySelection(history);
   const accountHistoryCount = history.filter((record) => record.accountType === getCurrentAccountType()).length;
+  const selectedCount = getSelectedXAiHistoryCount(history);
   const filtered = filterHistory(history);
   const totalPages = Math.max(1, Math.ceil(filtered.length / HISTORY_PAGE_SIZE));
   historyPage = Math.min(Math.max(1, historyPage), totalPages);
   const pageRecords = filtered.slice((historyPage - 1) * HISTORY_PAGE_SIZE, historyPage * HISTORY_PAGE_SIZE);
+  const selectable = isXAiHistorySelectionEnabled();
 
   dom.dataTableWrap.innerHTML = "";
   dom.dataTableWrap.append(renderHistoryControls(filtered.length, totalPages, {
-    allCount: accountHistoryCount
+    allCount: accountHistoryCount,
+    selectedCount
   }));
   if (!pageRecords.length) {
     const empty = document.createElement("div");
@@ -676,14 +681,27 @@ async function renderHistoryTable() {
     dom.dataTableWrap.append(empty);
     return;
   }
-  const table = createDataTable([
+  const table = createDataTable(selectable ? [
+    renderHistorySelectAllCheckbox(pageRecords),
+    "邮箱",
+    "注册时间",
+    "操作"
+  ] : [
     "邮箱",
     "注册时间",
     "操作"
   ]);
   table.classList.add("history-table");
+  if (selectable) {
+    table.classList.add("selectable-history-table");
+  }
   for (const record of pageRecords) {
-    appendDataRow(table, [
+    appendDataRow(table, selectable ? [
+      renderHistorySelectionCheckbox(record),
+      renderCopyableText(record.emailAddress || "-", record.emailAddress || "", "邮箱"),
+      formatDateTime(record.registeredAt),
+      renderHistoryAction(record)
+    ] : [
       renderCopyableText(record.emailAddress || "-", record.emailAddress || "", "邮箱"),
       formatDateTime(record.registeredAt),
       renderHistoryAction(record)
@@ -729,6 +747,14 @@ function renderHistoryControls(totalCount, totalPages, options = {}) {
   pager.append(prev, text, next);
   const clearAllButton = renderClearAllHistoryButton(options);
   if (isXAiReauthorizeMode(getRegisterMode())) {
+    const authorizeSelectedButton = renderSelectedHistoryButton({
+      text: "授权选中",
+      variant: "primary",
+      selectedCount: Number(options.selectedCount || 0),
+      emptyTitle: "请先勾选 xAI 历史账号",
+      activeTitle: "对选中的 xAI 历史账号重新授权",
+      onClick: startSelectedXAiReauthorize
+    });
     const authorizeAllButton = document.createElement("button");
     authorizeAllButton.type = "button";
     authorizeAllButton.className = "table-action primary";
@@ -738,12 +764,43 @@ function renderHistoryControls(totalCount, totalPages, options = {}) {
       ? `对全部 ${options.allCount} 个 xAI 历史账号重新授权`
       : "暂无可重新授权的 xAI 历史账号";
     authorizeAllButton.addEventListener("click", startAllXAiReauthorize);
-    wrapper.append(input, authorizeAllButton, clearAllButton, pager);
+    wrapper.append(input, authorizeSelectedButton, authorizeAllButton, clearAllButton, pager);
+    return wrapper;
+  }
+
+  if (getRegisterMode() === RUN_MODES.xaiRegister) {
+    const deleteSelectedButton = renderSelectedHistoryButton({
+      text: "删除选中",
+      variant: "danger",
+      selectedCount: Number(options.selectedCount || 0),
+      emptyTitle: "请先勾选 xAI 历史账号",
+      activeTitle: "删除选中的 xAI 本地历史记录",
+      onClick: deleteSelectedXAiHistoryRecords
+    });
+    wrapper.append(input, deleteSelectedButton, clearAllButton, pager);
     return wrapper;
   }
 
   wrapper.append(input, clearAllButton, pager);
   return wrapper;
+}
+
+function renderSelectedHistoryButton({
+  text,
+  variant,
+  selectedCount,
+  emptyTitle,
+  activeTitle,
+  onClick
+}) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = `table-action ${variant || ""}`.trim();
+  button.textContent = selectedCount ? `${text}(${selectedCount})` : text;
+  button.disabled = isFlowBusy() || selectedCount <= 0;
+  button.title = selectedCount ? `${activeTitle}：${selectedCount} 个` : emptyTitle;
+  button.addEventListener("click", onClick);
+  return button;
 }
 
 function renderClearAllHistoryButton(options = {}) {
@@ -770,6 +827,94 @@ function filterHistory(history) {
     return accountRecords;
   }
   return accountRecords.filter((record) => String(record.emailAddress || "").toLowerCase().includes(keyword));
+}
+
+function isXAiHistorySelectionEnabled() {
+  return getCurrentAccountType() === "xai";
+}
+
+function getHistoryRecordKey(record) {
+  if (record?.id) {
+    return `id:${record.id}`;
+  }
+  return [
+    "legacy",
+    record?.accountType || "",
+    record?.flowMode || "",
+    record?.emailAddress || record?.emailAccount?.emailAddress || "",
+    record?.registeredAt || ""
+  ].join("|");
+}
+
+function pruneXAiHistorySelection(history) {
+  if (!isXAiHistorySelectionEnabled()) {
+    selectedXAiHistoryKeys.clear();
+    return;
+  }
+  const validKeys = new Set(
+    history
+      .filter((record) => record.accountType === getCurrentAccountType())
+      .map(getHistoryRecordKey)
+  );
+  for (const key of [...selectedXAiHistoryKeys]) {
+    if (!validKeys.has(key)) {
+      selectedXAiHistoryKeys.delete(key);
+    }
+  }
+}
+
+function getSelectedXAiHistoryCount(history) {
+  if (!isXAiHistorySelectionEnabled()) {
+    return 0;
+  }
+  return history
+    .filter((record) => record.accountType === getCurrentAccountType())
+    .filter((record) => selectedXAiHistoryKeys.has(getHistoryRecordKey(record)))
+    .length;
+}
+
+function renderHistorySelectAllCheckbox(records) {
+  const checkbox = document.createElement("input");
+  checkbox.type = "checkbox";
+  checkbox.className = "history-select-checkbox";
+  checkbox.title = "全选当前页";
+  checkbox.setAttribute("aria-label", "全选当前页 xAI 历史账号");
+  const selectedCount = records.filter((record) => selectedXAiHistoryKeys.has(getHistoryRecordKey(record))).length;
+  checkbox.checked = records.length > 0 && selectedCount === records.length;
+  checkbox.indeterminate = selectedCount > 0 && selectedCount < records.length;
+  checkbox.disabled = isFlowBusy() || !records.length;
+  checkbox.addEventListener("change", () => {
+    for (const record of records) {
+      const key = getHistoryRecordKey(record);
+      if (checkbox.checked) {
+        selectedXAiHistoryKeys.add(key);
+      } else {
+        selectedXAiHistoryKeys.delete(key);
+      }
+    }
+    renderHistoryTable();
+  });
+  return checkbox;
+}
+
+function renderHistorySelectionCheckbox(record) {
+  const checkbox = document.createElement("input");
+  checkbox.type = "checkbox";
+  checkbox.className = "history-select-checkbox";
+  checkbox.checked = selectedXAiHistoryKeys.has(getHistoryRecordKey(record));
+  checkbox.disabled = isFlowBusy();
+  checkbox.title = "选择该 xAI 历史账号";
+  checkbox.setAttribute("aria-label", `选择 ${record.emailAddress || "该 xAI 历史账号"}`);
+  checkbox.addEventListener("change", () => {
+    const key = getHistoryRecordKey(record);
+    if (checkbox.checked) {
+      selectedXAiHistoryKeys.add(key);
+    } else {
+      selectedXAiHistoryKeys.delete(key);
+    }
+    renderHistoryTable();
+  });
+  return checkbox;
 }
 
 function renderHistoryAction(record) {
@@ -799,7 +944,11 @@ function createDataTable(headers) {
   const headerRow = document.createElement("tr");
   for (const header of headers) {
     const th = document.createElement("th");
-    th.textContent = header;
+    if (header instanceof Node) {
+      th.append(header);
+    } else {
+      th.textContent = header;
+    }
     headerRow.append(th);
   }
   thead.append(headerRow);
@@ -962,6 +1111,82 @@ async function startReauthorize(record) {
   });
 }
 
+async function getSelectedXAiHistoryRecords({ requireEmail = false } = {}) {
+  const history = await loadRegisterHistory();
+  pruneXAiHistorySelection(history);
+  return history
+    .filter((record) => record.accountType === "xai")
+    .filter((record) => selectedXAiHistoryKeys.has(getHistoryRecordKey(record)))
+    .filter((record) => !requireEmail || record.emailAddress || record.emailAccount?.emailAddress);
+}
+
+async function deleteSelectedXAiHistoryRecords() {
+  if (isFlowBusy()) {
+    showConfigMessage("流程正在运行，不能删除选中历史记录", true);
+    return;
+  }
+  if (getRegisterMode() !== RUN_MODES.xaiRegister) {
+    showConfigMessage("删除选中只支持 xAI 注册模式", true);
+    return;
+  }
+  const records = await getSelectedXAiHistoryRecords();
+  if (!records.length) {
+    showConfigMessage("请先勾选要删除的 xAI 历史账号", true);
+    return;
+  }
+  if (!window.confirm(`确定删除选中的 ${records.length} 条 xAI 本地历史记录？\n此操作不会删除邮箱或账号服务中的账号。`)) {
+    return;
+  }
+
+  let success = 0;
+  let failed = 0;
+  for (const record of records) {
+    try {
+      await deleteRegisterHistoryRecord(record);
+      selectedXAiHistoryKeys.delete(getHistoryRecordKey(record));
+      success += 1;
+    } catch (error) {
+      failed += 1;
+      logger.warn("选中历史记录删除失败", {
+        email: record.emailAddress || record.emailAccount?.emailAddress || "",
+        error: error.message
+      });
+    }
+  }
+  await renderHistoryTable();
+  showConfigMessage(failed
+    ? `选中历史记录删除完成：成功 ${success}，失败 ${failed}`
+    : `选中历史记录已删除：${success} 条`, Boolean(failed));
+}
+
+async function startSelectedXAiReauthorize() {
+  if (isFlowBusy()) {
+    showConfigMessage("流程正在运行，不能启动选中授权", true);
+    return;
+  }
+  if (!isXAiReauthorizeMode(getRegisterMode())) {
+    showConfigMessage("授权选中只支持 xAI 授权模式", true);
+    return;
+  }
+  const errors = validateConfig(appConfig);
+  if (errors.length) {
+    showConfigMessage(errors.join("；"), true);
+    return;
+  }
+
+  const records = await getSelectedXAiHistoryRecords({ requireEmail: true });
+  if (!records.length) {
+    showConfigMessage("请先勾选可重新授权的 xAI 历史账号", true);
+    return;
+  }
+
+  await runXAiReauthorizeBatch(records, {
+    type: "xai_reauthorize_selected",
+    source: "selected_history",
+    operationName: "xAI 选中授权"
+  });
+}
+
 async function startAllXAiReauthorize() {
   if (isFlowBusy()) {
     showConfigMessage("流程正在运行，不能启动全部授权", true);
@@ -986,6 +1211,18 @@ async function startAllXAiReauthorize() {
     return;
   }
 
+  await runXAiReauthorizeBatch(records, {
+    type: "xai_reauthorize_all",
+    source: "bulk_history",
+    operationName: "xAI 全部授权"
+  });
+}
+
+async function runXAiReauthorizeBatch(records, {
+  type,
+  source,
+  operationName
+}) {
   await clearSnapshot();
   await clearLogs();
   dom.logList.innerHTML = "";
@@ -996,10 +1233,11 @@ async function startAllXAiReauthorize() {
     failed: 0,
     stopRequested: false,
     startedAt: new Date().toISOString(),
-    type: "xai_reauthorize_all"
+    type
   };
   updateRunButtons(lastSnapshot);
-  logger.info("xAI 全部授权流程开始", {
+  await renderHistoryTable();
+  logger.info(`${operationName}流程开始`, {
     total: records.length
   });
 
@@ -1010,7 +1248,7 @@ async function startAllXAiReauthorize() {
       }
       const record = records[index];
       const round = index + 1;
-      logger.info("xAI 全部授权账号开始", {
+      logger.info(`${operationName}账号开始`, {
         round,
         total: records.length,
         email: record.emailAddress || record.emailAccount?.emailAddress || ""
@@ -1021,7 +1259,7 @@ async function startAllXAiReauthorize() {
         initialState = await buildReauthorizeState(record);
       } catch (error) {
         batchRunState.failed += 1;
-        logger.warn("xAI 全部授权账号跳过", {
+        logger.warn(`${operationName}账号跳过`, {
           round,
           total: records.length,
           email: record.emailAddress || record.emailAccount?.emailAddress || "",
@@ -1035,7 +1273,7 @@ async function startAllXAiReauthorize() {
         result = await runReauthorizeFlow(initialState, {
           email: record.emailAddress,
           emailMode: record.emailMode,
-          source: "bulk_history",
+          source,
           mode: RUN_MODES.xaiReauthorize,
           preserveLogs: true
         });
@@ -1052,7 +1290,7 @@ async function startAllXAiReauthorize() {
       }
       if (result?.success) {
         batchRunState.success += 1;
-        logger.info("xAI 全部授权账号成功", {
+        logger.info(`${operationName}账号成功`, {
           round,
           total: records.length,
           email: record.emailAddress || record.emailAccount?.emailAddress || "",
@@ -1060,7 +1298,7 @@ async function startAllXAiReauthorize() {
         });
       } else {
         batchRunState.failed += 1;
-        logger.warn("xAI 全部授权账号失败，继续下一个", {
+        logger.warn(`${operationName}账号失败，继续下一个`, {
           round,
           total: records.length,
           email: record.emailAddress || record.emailAccount?.emailAddress || "",
@@ -1071,15 +1309,15 @@ async function startAllXAiReauthorize() {
     }
 
     const stopped = batchRunState.stopRequested;
-    logger[stopped ? "warn" : "info"]("xAI 全部授权流程结束", {
+    logger[stopped ? "warn" : "info"](`${operationName}流程结束`, {
       total: batchRunState.total,
       success: batchRunState.success,
       failed: batchRunState.failed,
       stopped
     });
     showConfigMessage(stopped
-      ? `xAI 全部授权已停止：成功 ${batchRunState.success}，失败 ${batchRunState.failed}`
-      : `xAI 全部授权完成：成功 ${batchRunState.success}，失败 ${batchRunState.failed}`);
+      ? `${operationName}已停止：成功 ${batchRunState.success}，失败 ${batchRunState.failed}`
+      : `${operationName}完成：成功 ${batchRunState.success}，失败 ${batchRunState.failed}`);
   } finally {
     runner = null;
     batchRunState = null;
