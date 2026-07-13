@@ -1,7 +1,7 @@
 import { TabController } from "../core/browser.js";
 import { FlowRunner, createInitialSnapshot } from "../core/flow.js";
 import { STORAGE_KEYS, clearLogs, clearRegisterHistoryByAccountType, clearSnapshot, deleteRegisterHistoryRecord, loadConfig, loadLogs, loadOutlookGroups, loadRegisterHistory, loadSnapshot, saveConfig, saveOutlookGroups, saveSnapshot } from "../core/storage.js";
-import { getActiveRuntimeConfig, normalizeConfig, validateConfig } from "../core/config.js";
+import { getActiveRegisterConfig, getActiveRuntimeConfig, normalizeConfig, validateConfig } from "../core/config.js";
 import {
   RUN_MODES,
   getAccountTypeByMode,
@@ -150,25 +150,28 @@ const CONFIG_SCHEMAS = {
       textField("管理密钥", `${basePath}.providers.cpa.secretKey`)
     ];
   },
-  register: [
-    section("批量注册"),
-    batchCountField("注册数量", "register.batchCount", "失败会记录日志并继续下一轮；停止按钮会终止后续轮次。"),
-    section("注册流程"),
-    selectField("注册流程", "register.openAiRegisterFlow", [
-      [OPENAI_REGISTER_FLOWS.emailFirst, "先邮箱后绑定手机号"],
-      [OPENAI_REGISTER_FLOWS.phoneFirst, "先手机号后邮箱绑定"]
-    ], "", () => isOpenAiRegisterMode(getRegisterMode())),
-    numberField("邮箱验证码超时", "register.verificationCodeWaitTimeout", "秒"),
-    numberField("手机号重试次数", "register.phoneNumberRetryAttempts", "次", () => isOpenAiRegisterMode(getRegisterMode())),
-    numberField("短信 OAuth 重试", "register.smsVerificationRetryAttempts", "次", () => isOpenAiRegisterMode(getRegisterMode())),
-    numberField("OAuth 重新认证阈值", "register.oauthReauthWaitThresholdSeconds", "秒", () => isOpenAiRegisterMode(getRegisterMode())),
-    section("手机号策略", () => isOpenAiRegisterMode(getRegisterMode())),
-    checkboxField("号码复用", "register.reusePhoneNumber", null, {
-      visible: () => isOpenAiRegisterMode(getRegisterMode()),
-      summary: () => formatLatestActivationSummary(latestActivationRecord)
-    }),
-    numberField("复用最小间隔", "register.reuseMinIntervalSeconds", "秒", () => isOpenAiRegisterMode(getRegisterMode()))
-  ],
+  register: () => {
+    const basePath = getActiveRegisterConfigPath();
+    return [
+      section(`${getAccountTypeLabel(getCurrentAccountType())} 批量注册`),
+      batchCountField("注册数量", `${basePath}.batchCount`, "失败会记录日志并继续下一轮；停止按钮会终止后续轮次。"),
+      section("注册流程"),
+      selectField("注册流程", `${basePath}.openAiRegisterFlow`, [
+        [OPENAI_REGISTER_FLOWS.emailFirst, "先邮箱后绑定手机号"],
+        [OPENAI_REGISTER_FLOWS.phoneFirst, "先手机号后邮箱绑定"]
+      ], "", () => isOpenAiRegisterMode(getRegisterMode())),
+      numberField("邮箱验证码超时", `${basePath}.verificationCodeWaitTimeout`, "秒"),
+      numberField("手机号重试次数", `${basePath}.phoneNumberRetryAttempts`, "次", () => isOpenAiRegisterMode(getRegisterMode())),
+      numberField("短信 OAuth 重试", `${basePath}.smsVerificationRetryAttempts`, "次", () => isOpenAiRegisterMode(getRegisterMode())),
+      numberField("OAuth 重新认证阈值", `${basePath}.oauthReauthWaitThresholdSeconds`, "秒", () => isOpenAiRegisterMode(getRegisterMode())),
+      section("手机号策略", () => isOpenAiRegisterMode(getRegisterMode())),
+      checkboxField("号码复用", `${basePath}.reusePhoneNumber`, null, {
+        visible: () => isOpenAiRegisterMode(getRegisterMode()),
+        summary: () => formatLatestActivationSummary(latestActivationRecord)
+      }),
+      numberField("复用最小间隔", `${basePath}.reuseMinIntervalSeconds`, "秒", () => isOpenAiRegisterMode(getRegisterMode()))
+    ];
+  },
   reauthorize: [
     section("重新授权"),
     checkboxField("账号被删时删除账号", "reauthorize.deleteAccountOnDeactivated"),
@@ -780,16 +783,7 @@ function renderHistoryControls(totalCount, totalPages, options = {}) {
       activeTitle: "对选中的 xAI 历史账号重新授权",
       onClick: startSelectedXAiReauthorize
     });
-    const authorizeAllButton = document.createElement("button");
-    authorizeAllButton.type = "button";
-    authorizeAllButton.className = "table-action primary";
-    authorizeAllButton.textContent = "全部授权";
-    authorizeAllButton.disabled = isFlowBusy() || Number(options.allCount || 0) <= 0;
-    authorizeAllButton.title = options.allCount
-      ? `对全部 ${options.allCount} 个 xAI 历史账号重新授权`
-      : "暂无可重新授权的 xAI 历史账号";
-    authorizeAllButton.addEventListener("click", startAllXAiReauthorize);
-    wrapper.append(input, authorizeSelectedButton, authorizeAllButton, clearAllButton, pager);
+    wrapper.append(input, authorizeSelectedButton, clearAllButton, pager);
     return wrapper;
   }
 
@@ -1214,38 +1208,6 @@ async function startSelectedXAiReauthorize() {
   });
 }
 
-async function startAllXAiReauthorize() {
-  if (isFlowBusy()) {
-    showConfigMessage("流程正在运行，不能启动全部授权", true);
-    return;
-  }
-  if (!isXAiReauthorizeMode(getRegisterMode())) {
-    showConfigMessage("全部授权只支持 xAI 授权模式", true);
-    return;
-  }
-  clearBatchProgress();
-  const errors = validateConfig(appConfig);
-  if (errors.length) {
-    showConfigMessage(errors.join("；"), true);
-    return;
-  }
-
-  const history = await loadRegisterHistory();
-  const records = history
-    .filter((record) => record.accountType === getCurrentAccountType())
-    .filter((record) => record.emailAddress || record.emailAccount?.emailAddress);
-  if (!records.length) {
-    showConfigMessage("暂无可重新授权的 xAI 历史账号", true);
-    return;
-  }
-
-  await runXAiReauthorizeBatch(records, {
-    type: "xai_reauthorize_all",
-    source: "bulk_history",
-    operationName: "xAI 全部授权"
-  });
-}
-
 async function runXAiReauthorizeBatch(records, {
   type,
   source,
@@ -1565,7 +1527,7 @@ function formatLatestActivationSummary(record) {
     return "暂无缓存号码";
   }
   const reusableAt = record.lastVerificationCodeUsableAt
-    ? new Date(toTime(record.lastVerificationCodeUsableAt) + Number(getConfigValue(appConfig, "register.reuseMinIntervalSeconds") || 0) * 1000)
+    ? new Date(toTime(record.lastVerificationCodeUsableAt) + Number(getConfigValue(appConfig, `${getActiveRegisterConfigPath()}.reuseMinIntervalSeconds`) || 0) * 1000)
     : null;
   const reusableText = reusableAt && !Number.isNaN(reusableAt.getTime())
     ? formatDateTime(reusableAt.toISOString())
@@ -2132,10 +2094,10 @@ function handleConfigControlChange(field, value, rerender) {
   if (field.path === "register.mode") {
     setConfigValue(appConfig, "register.mode", normalizeRunMode(getConfigValue(appConfig, "register.mode")));
   }
-  if (field.path === "register.openAiRegisterFlow") {
-    setConfigValue(appConfig, "register.openAiRegisterFlow", normalizeOpenAiRegisterFlow(getConfigValue(appConfig, "register.openAiRegisterFlow")));
+  if (field.path.endsWith(".openAiRegisterFlow")) {
+    setConfigValue(appConfig, field.path, normalizeOpenAiRegisterFlow(getConfigValue(appConfig, field.path)));
   }
-  if (field.path === "register.mode" || field.path === "register.openAiRegisterFlow") {
+  if (field.path === "register.mode" || field.path.endsWith(".openAiRegisterFlow")) {
     rebuildFlowForMode();
     renderModeSwitch();
     ensureActiveConfigGroup();
@@ -2145,7 +2107,7 @@ function handleConfigControlChange(field, value, rerender) {
   if (field.path === "ui.theme") {
     applyTheme();
   }
-  if (field.path === "register.reuseMinIntervalSeconds") {
+  if (field.path.endsWith(".reuseMinIntervalSeconds")) {
     refreshLatestActivationSummary();
   }
   scheduleConfigSave();
@@ -2839,7 +2801,7 @@ function getRegisterMode() {
 }
 
 function getOpenAiRegisterFlow() {
-  return normalizeOpenAiRegisterFlow(getConfigValue(appConfig, "register.openAiRegisterFlow"));
+  return normalizeOpenAiRegisterFlow(getActiveRegisterConfig(appConfig).openAiRegisterFlow);
 }
 
 function buildFlowOptions() {
@@ -2849,7 +2811,7 @@ function buildFlowOptions() {
 }
 
 function getRegisterBatchCount() {
-  return normalizeBatchCount(getConfigValue(appConfig, "register.batchCount"));
+  return normalizeBatchCount(getActiveRegisterConfig(appConfig).batchCount);
 }
 
 function normalizeBatchCount(value) {
@@ -2872,6 +2834,10 @@ function getActiveAccountProfilePath() {
 
 function getActiveServiceConfigPath(groupName) {
   return `serviceConfigs.${getCurrentAccountType()}.${groupName}`;
+}
+
+function getActiveRegisterConfigPath() {
+  return `registerConfigs.${getCurrentAccountType()}`;
 }
 
 function ensureActiveConfigGroup() {

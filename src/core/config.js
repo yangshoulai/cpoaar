@@ -80,6 +80,17 @@ const DEFAULT_SERVICE_CONFIG = Object.freeze({
   accountManagementService: DEFAULT_ACCOUNT_MANAGEMENT_SERVICE
 });
 
+const DEFAULT_REGISTER_CONFIG = Object.freeze({
+  openAiRegisterFlow: OPENAI_REGISTER_FLOWS.emailFirst,
+  batchCount: 1,
+  verificationCodeWaitTimeout: 60,
+  phoneNumberRetryAttempts: 5,
+  smsVerificationRetryAttempts: 5,
+  oauthReauthWaitThresholdSeconds: 60,
+  reusePhoneNumber: true,
+  reuseMinIntervalSeconds: 900
+});
+
 export const DEFAULT_CONFIG = Object.freeze({
   ui: {
     theme: "dark"
@@ -100,15 +111,15 @@ export const DEFAULT_CONFIG = Object.freeze({
     level: "INFO"
   },
   register: {
-    mode: RUN_MODES.openaiRegister,
-    openAiRegisterFlow: OPENAI_REGISTER_FLOWS.emailFirst,
-    batchCount: 1,
-    verificationCodeWaitTimeout: 60,
-    phoneNumberRetryAttempts: 5,
-    smsVerificationRetryAttempts: 5,
-    oauthReauthWaitThresholdSeconds: 60,
-    reusePhoneNumber: true,
-    reuseMinIntervalSeconds: 900
+    mode: RUN_MODES.openaiRegister
+  },
+  registerConfigs: {
+    openai: {
+      ...DEFAULT_REGISTER_CONFIG
+    },
+    xai: {
+      ...DEFAULT_REGISTER_CONFIG
+    }
   },
   reauthorize: {
     deleteAccountOnDeactivated: false,
@@ -137,12 +148,22 @@ export function getActiveServiceConfig(config, groupName) {
     || {};
 }
 
+export function getActiveRegisterConfig(config) {
+  const normalized = config?.registerConfigs ? config : normalizeConfig(config || {});
+  return resolveActiveRegisterConfig(normalized);
+}
+
 export function getActiveRuntimeConfig(config) {
-  const normalized = config?.serviceConfigs ? config : normalizeConfig(config || {});
+  const normalized = config?.serviceConfigs && config?.registerConfigs ? config : normalizeConfig(config || {});
   const accountType = getAccountTypeByMode(normalized.register?.mode);
   const activeServices = normalized.serviceConfigs?.[accountType] || {};
+  const activeRegister = resolveActiveRegisterConfig(normalized);
   return {
     ...normalized,
+    register: {
+      ...activeRegister,
+      mode: normalizeRunMode(normalized.register?.mode)
+    },
     httpService: activeServices.httpService || normalized.httpService || DEFAULT_HTTP_SERVICE,
     emailService: activeServices.emailService || normalized.emailService || DEFAULT_EMAIL_SERVICE,
     smsService: activeServices.smsService || normalized.smsService || DEFAULT_SMS_SERVICE,
@@ -176,7 +197,7 @@ export function validateConfig(config) {
   const accountConfig = runtimeConfig.accountManagementService.providers.cpa;
   const runMode = normalizeRunMode(normalized.register.mode);
   const accountProfile = getAccountProfileConfig(normalized);
-  const batchCount = Number(normalized.register.batchCount);
+  const batchCount = Number(runtimeConfig.register.batchCount);
 
   if (accountProfile.randomPassword === false && !accountProfile.specifiedPassword) {
     errors.push("关闭随机密码时，固定密码不能为空");
@@ -218,6 +239,14 @@ export function getAccountProfileConfig(config) {
   const normalized = config?.accountProfiles ? config : normalizeConfig(config || {});
   const accountType = getAccountTypeByMode(normalized.register?.mode);
   return normalized.accountProfiles?.[accountType] || normalized.accountProfiles?.[ACCOUNT_TYPES.openai] || DEFAULT_ACCOUNT_PROFILE;
+}
+
+function resolveActiveRegisterConfig(normalized) {
+  const accountType = getAccountTypeByMode(normalized.register?.mode);
+  return normalized.registerConfigs?.[accountType]
+    || normalized.registerConfigs?.[ACCOUNT_TYPES.openai]
+    || DEFAULT_CONFIG.registerConfigs?.[accountType]
+    || DEFAULT_REGISTER_CONFIG;
 }
 
 function normalizeMobileNumber(value) {
@@ -309,7 +338,40 @@ function migrateConfig(config) {
     delete migrated.register.waitReusableActivationEnabled;
     delete migrated.register.cleanupSmsActivationHistoryEnabled;
   }
+  migrated.registerConfigs = buildMigratedRegisterConfigs(migrated);
+  for (const accountType of Object.values(ACCOUNT_TYPES)) {
+    normalizeRegisterConfig(migrated.registerConfigs[accountType]);
+  }
+  migrated.register = {
+    mode: normalizeRunMode(migrated.register?.mode)
+  };
   return migrated;
+}
+
+function buildMigratedRegisterConfigs(migrated) {
+  const existing = migrated.registerConfigs || {};
+  const legacy = {
+    ...(migrated.register || {})
+  };
+  delete legacy.mode;
+  return {
+    [ACCOUNT_TYPES.openai]: deepMerge(legacy, existing[ACCOUNT_TYPES.openai] || {}),
+    [ACCOUNT_TYPES.xai]: deepMerge(
+      legacy,
+      deepMerge(existing.grok || {}, existing[ACCOUNT_TYPES.xai] || {})
+    )
+  };
+}
+
+function normalizeRegisterConfig(registerConfig = {}) {
+  registerConfig.openAiRegisterFlow = normalizeOpenAiRegisterFlow(registerConfig.openAiRegisterFlow);
+  delete registerConfig.mode;
+  if (Object.hasOwn(registerConfig, "reuseLocalActivation") && !Object.hasOwn(registerConfig, "reusePhoneNumber")) {
+    registerConfig.reusePhoneNumber = registerConfig.reuseLocalActivation;
+  }
+  delete registerConfig.reuseLocalActivation;
+  delete registerConfig.waitReusableActivationEnabled;
+  delete registerConfig.cleanupSmsActivationHistoryEnabled;
 }
 
 function buildMigratedServiceConfigs(migrated) {
