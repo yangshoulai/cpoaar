@@ -28,6 +28,12 @@ const dom = {
   registerModeSelect: document.querySelector("#registerModeSelect"),
   reauthorizeManualPanel: document.querySelector("#reauthorizeManualPanel"),
   reauthorizeEmailInput: document.querySelector("#reauthorizeEmailInput"),
+  batchProgressPanel: document.querySelector("#batchProgressPanel"),
+  batchProgressTitle: document.querySelector("#batchProgressTitle"),
+  batchProgressStatus: document.querySelector("#batchProgressStatus"),
+  batchProgressRound: document.querySelector("#batchProgressRound"),
+  batchProgressSuccess: document.querySelector("#batchProgressSuccess"),
+  batchProgressFailed: document.querySelector("#batchProgressFailed"),
   startFreshButton: document.querySelector("#startFreshButton"),
   continueButton: document.querySelector("#continueButton"),
   retryButton: document.querySelector("#retryButton"),
@@ -321,6 +327,7 @@ const heroSmsBalanceState = {
   error: ""
 };
 let batchRunState = null;
+let batchProgressState = null;
 
 applyTheme();
 renderAll();
@@ -410,6 +417,7 @@ async function startRegisterFresh() {
     showConfigMessage("流程正在运行，不能重复启动", true);
     return;
   }
+  clearBatchProgress();
   const errors = validateConfig(appConfig);
   if (errors.length) {
     showConfigMessage(errors.join("；"), true);
@@ -422,11 +430,18 @@ async function startRegisterFresh() {
   renderedLogIds.clear();
   batchRunState = {
     total: batchCount,
+    currentRound: 0,
     success: 0,
     failed: 0,
     stopRequested: false,
-    startedAt: new Date().toISOString()
+    startedAt: new Date().toISOString(),
+    type: "register"
   };
+  initBatchProgress({
+    title: "批量注册",
+    total: batchCount,
+    type: "register"
+  });
   logger.info("从头开始执行注册流程", {
     mode: getRegisterMode(),
     label: getRunModeLabel(getRegisterMode()),
@@ -437,6 +452,8 @@ async function startRegisterFresh() {
       if (batchRunState.stopRequested) {
         break;
       }
+      batchRunState.currentRound = round;
+      updateBatchProgressFromRunState("running");
       await clearSnapshot();
       const result = await runRegisterBatchRound(round, batchCount);
       if (result?.status === "stopped" || batchRunState.stopRequested) {
@@ -448,8 +465,10 @@ async function startRegisterFresh() {
       } else {
         batchRunState.failed += 1;
       }
+      updateBatchProgressFromRunState("running");
     }
     const stopped = batchRunState.stopRequested;
+    finishBatchProgress(stopped ? "stopped" : "finished");
     logger[stopped ? "warn" : "info"]("批量注册流程结束", {
       total: batchRunState.total,
       success: batchRunState.success,
@@ -460,6 +479,9 @@ async function startRegisterFresh() {
       ? `批量注册已停止：成功 ${batchRunState.success}，失败 ${batchRunState.failed}`
       : `批量注册完成：成功 ${batchRunState.success}，失败 ${batchRunState.failed}`);
   } finally {
+    if (batchProgressState?.status === "running") {
+      finishBatchProgress(batchRunState?.stopRequested ? "stopped" : "failed");
+    }
     runner = null;
     batchRunState = null;
     updateRunButtons(lastSnapshot);
@@ -523,6 +545,7 @@ async function startManualReauthorize() {
     showConfigMessage("流程正在运行，不能启动重新授权", true);
     return;
   }
+  clearBatchProgress();
   const emailAddress = normalizeEmailAddress(dom.reauthorizeEmailInput.value);
   if (!isValidEmailAddress(emailAddress)) {
     showConfigMessage("请输入有效的授权邮箱", true);
@@ -554,6 +577,7 @@ async function continueRun() {
     showConfigMessage("流程正在运行，不能继续其它快照", true);
     return;
   }
+  clearBatchProgress();
   const snapshot = await loadSnapshot();
   if (!snapshot) {
     showConfigMessage("没有可继续的流程快照", true);
@@ -588,6 +612,7 @@ async function retryCurrentNode() {
     showConfigMessage("流程正在运行，不能重试当前节点", true);
     return;
   }
+  clearBatchProgress();
   const snapshot = await loadSnapshot();
   if (!snapshot?.currentNode) {
     showConfigMessage("没有可重试的当前节点", true);
@@ -1090,6 +1115,7 @@ async function startReauthorize(record) {
     showConfigMessage("流程正在运行，不能启动重新授权", true);
     return;
   }
+  clearBatchProgress();
   const errors = validateConfig(appConfig);
   if (errors.length) {
     showConfigMessage(errors.join("；"), true);
@@ -1168,6 +1194,7 @@ async function startSelectedXAiReauthorize() {
     showConfigMessage("授权选中只支持 xAI 授权模式", true);
     return;
   }
+  clearBatchProgress();
   const errors = validateConfig(appConfig);
   if (errors.length) {
     showConfigMessage(errors.join("；"), true);
@@ -1196,6 +1223,7 @@ async function startAllXAiReauthorize() {
     showConfigMessage("全部授权只支持 xAI 授权模式", true);
     return;
   }
+  clearBatchProgress();
   const errors = validateConfig(appConfig);
   if (errors.length) {
     showConfigMessage(errors.join("；"), true);
@@ -1229,12 +1257,18 @@ async function runXAiReauthorizeBatch(records, {
   renderedLogIds.clear();
   batchRunState = {
     total: records.length,
+    currentRound: 0,
     success: 0,
     failed: 0,
     stopRequested: false,
     startedAt: new Date().toISOString(),
     type
   };
+  initBatchProgress({
+    title: operationName,
+    total: records.length,
+    type
+  });
   updateRunButtons(lastSnapshot);
   await renderHistoryTable();
   logger.info(`${operationName}流程开始`, {
@@ -1248,6 +1282,8 @@ async function runXAiReauthorizeBatch(records, {
       }
       const record = records[index];
       const round = index + 1;
+      batchRunState.currentRound = round;
+      updateBatchProgressFromRunState("running");
       logger.info(`${operationName}账号开始`, {
         round,
         total: records.length,
@@ -1259,6 +1295,7 @@ async function runXAiReauthorizeBatch(records, {
         initialState = await buildReauthorizeState(record);
       } catch (error) {
         batchRunState.failed += 1;
+        updateBatchProgressFromRunState("running");
         logger.warn(`${operationName}账号跳过`, {
           round,
           total: records.length,
@@ -1290,6 +1327,7 @@ async function runXAiReauthorizeBatch(records, {
       }
       if (result?.success) {
         batchRunState.success += 1;
+        updateBatchProgressFromRunState("running");
         logger.info(`${operationName}账号成功`, {
           round,
           total: records.length,
@@ -1298,6 +1336,7 @@ async function runXAiReauthorizeBatch(records, {
         });
       } else {
         batchRunState.failed += 1;
+        updateBatchProgressFromRunState("running");
         logger.warn(`${operationName}账号失败，继续下一个`, {
           round,
           total: records.length,
@@ -1309,6 +1348,7 @@ async function runXAiReauthorizeBatch(records, {
     }
 
     const stopped = batchRunState.stopRequested;
+    finishBatchProgress(stopped ? "stopped" : "finished");
     logger[stopped ? "warn" : "info"](`${operationName}流程结束`, {
       total: batchRunState.total,
       success: batchRunState.success,
@@ -1319,6 +1359,9 @@ async function runXAiReauthorizeBatch(records, {
       ? `${operationName}已停止：成功 ${batchRunState.success}，失败 ${batchRunState.failed}`
       : `${operationName}完成：成功 ${batchRunState.success}，失败 ${batchRunState.failed}`);
   } finally {
+    if (batchProgressState?.status === "running") {
+      finishBatchProgress(batchRunState?.stopRequested ? "stopped" : "failed");
+    }
     runner = null;
     batchRunState = null;
     updateRunButtons(lastSnapshot);
@@ -1336,6 +1379,9 @@ async function runReauthorizeFlow(initialState, logData = {}) {
   await saveConfig(appConfig);
   rebuildFlowForMode();
   await clearSnapshot();
+  if (!logData.preserveLogs) {
+    clearBatchProgress();
+  }
   if (!logData.preserveLogs) {
     await clearLogs();
     dom.logList.innerHTML = "";
@@ -1675,17 +1721,29 @@ async function updateRegisterMode(mode) {
   setConfigValue(appConfig, "register.mode", normalizedMode);
   await saveConfig(appConfig);
   rebuildFlowForMode();
+  await resetRuntimeStateAfterModeSwitch();
   ensureActiveConfigGroup();
   renderModeSwitch();
   renderConfigTabs();
   renderConfigForm();
-  renderSnapshot(lastSnapshot);
   await renderHistoryPanel();
   showConfigMessage(`已切换到${getRunModeLabel(normalizedMode)}模式`);
 }
 
 function rebuildFlowForMode() {
   flow = buildRegisterFlow(getRegisterMode(), buildFlowOptions());
+}
+
+async function resetRuntimeStateAfterModeSwitch() {
+  runner = null;
+  batchRunState = null;
+  clearBatchProgress();
+  await clearSnapshot();
+  await clearLogs();
+  dom.logList.innerHTML = "";
+  renderedLogIds.clear();
+  lastSnapshot = await createInitialSnapshot(flow);
+  renderSnapshot(lastSnapshot);
 }
 
 function renderConfigTabs() {
@@ -2483,6 +2541,82 @@ function renderSnapshot(snapshot) {
   }
 }
 
+function initBatchProgress({
+  title,
+  total,
+  type
+}) {
+  batchProgressState = {
+    title,
+    type,
+    total: Number(total || 0),
+    currentRound: 0,
+    success: 0,
+    failed: 0,
+    status: "running",
+    startedAt: new Date().toISOString()
+  };
+  renderBatchProgress();
+}
+
+function clearBatchProgress() {
+  batchProgressState = null;
+  renderBatchProgress();
+}
+
+function updateBatchProgressFromRunState(status = "running") {
+  if (!batchRunState || !batchProgressState) {
+    return;
+  }
+  batchProgressState = {
+    ...batchProgressState,
+    total: Number(batchRunState.total || batchProgressState.total || 0),
+    currentRound: Number(batchRunState.currentRound || 0),
+    success: Number(batchRunState.success || 0),
+    failed: Number(batchRunState.failed || 0),
+    status
+  };
+  renderBatchProgress();
+}
+
+function finishBatchProgress(status) {
+  updateBatchProgressFromRunState(status);
+}
+
+function renderBatchProgress() {
+  if (!dom.batchProgressPanel) {
+    return;
+  }
+  if (!batchProgressState) {
+    dom.batchProgressPanel.hidden = true;
+    return;
+  }
+  const total = Number(batchProgressState.total || 0);
+  const currentRound = Math.min(Number(batchProgressState.currentRound || 0), total || Number(batchProgressState.currentRound || 0));
+  dom.batchProgressPanel.hidden = false;
+  dom.batchProgressPanel.dataset.status = batchProgressState.status || "running";
+  dom.batchProgressTitle.textContent = batchProgressState.title || "批量进度";
+  dom.batchProgressStatus.textContent = formatBatchProgressStatus(batchProgressState.status);
+  dom.batchProgressRound.textContent = total ? `${currentRound}/${total}` : "-";
+  dom.batchProgressSuccess.textContent = String(Number(batchProgressState.success || 0));
+  dom.batchProgressFailed.textContent = String(Number(batchProgressState.failed || 0));
+}
+
+function formatBatchProgressStatus(status) {
+  switch (status) {
+    case "running":
+      return "运行中";
+    case "stopped":
+      return "已停止";
+    case "finished":
+      return "已完成";
+    case "failed":
+      return "异常";
+    default:
+      return "-";
+  }
+}
+
 function updateRunButtons(snapshot) {
   const status = snapshot.status || "idle";
   const hasStarted = Boolean(snapshot.startedAt) || Object.keys(snapshot.nodeResults || {}).length > 0;
@@ -2495,6 +2629,7 @@ function updateRunButtons(snapshot) {
   dom.continueButton.disabled = !canContinue;
   dom.retryButton.disabled = !canRetry;
   dom.stopButton.disabled = !isRunning;
+  renderBatchProgress();
   renderModeSwitch();
 }
 

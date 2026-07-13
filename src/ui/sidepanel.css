@@ -291,6 +291,89 @@ h2 {
   outline-offset: 1px;
 }
 
+.batch-progress-panel {
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+  padding: 8px 10px;
+}
+
+.batch-progress-panel[hidden] {
+  display: none;
+}
+
+.batch-progress-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.batch-progress-head > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.batch-progress-status {
+  flex: 0 0 auto;
+  color: var(--running);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.batch-progress-panel[data-status="finished"] .batch-progress-status {
+  color: var(--success);
+}
+
+.batch-progress-panel[data-status="stopped"] .batch-progress-status,
+.batch-progress-panel[data-status="failed"] .batch-progress-status {
+  color: var(--failed);
+}
+
+.batch-progress-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.batch-progress-grid div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  border: 1px solid var(--row-line);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--panel) 62%, transparent);
+  padding: 6px 7px;
+}
+
+.batch-progress-grid span {
+  color: var(--soft);
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.batch-progress-grid strong {
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.2;
+}
+
+#batchProgressSuccess {
+  color: var(--success);
+}
+
+#batchProgressFailed {
+  color: var(--failed);
+}
+
 .mode-switch {
   display: inline-flex;
   align-items: center;
@@ -864,12 +947,16 @@ dd {
 }
 
 .data-table-wrap {
+  --data-toolbar-sticky-offset: 47px;
   max-height: 360px;
   overflow: auto;
   background: var(--panel);
 }
 
 .data-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 3;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -926,8 +1013,8 @@ dd {
 
 .data-table th {
   position: sticky;
-  top: 0;
-  z-index: 1;
+  top: var(--data-toolbar-sticky-offset, 0);
+  z-index: 2;
   background: var(--panel);
   color: var(--muted);
   font-weight: 650;
@@ -1156,6 +1243,7 @@ dd {
   }
 
   .data-table-wrap {
+    --data-toolbar-sticky-offset: 80px;
     overflow-x: hidden;
   }
 

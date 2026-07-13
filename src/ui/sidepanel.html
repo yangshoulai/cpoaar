@@ -52,6 +52,27 @@
           <label for="reauthorizeEmailInput">授权邮箱</label>
           <input id="reauthorizeEmailInput" type="email" autocomplete="email" spellcheck="false" placeholder="name@example.com">
         </section>
+
+        <section id="batchProgressPanel" class="batch-progress-panel" aria-label="批量进度" hidden>
+          <div class="batch-progress-head">
+            <span id="batchProgressTitle">批量进度</span>
+            <span id="batchProgressStatus" class="batch-progress-status">-</span>
+          </div>
+          <div class="batch-progress-grid">
+            <div>
+              <span>轮次</span>
+              <strong id="batchProgressRound">-</strong>
+            </div>
+            <div>
+              <span>成功</span>
+              <strong id="batchProgressSuccess">0</strong>
+            </div>
+            <div>
+              <span>失败</span>
+              <strong id="batchProgressFailed">0</strong>
+            </div>
+          </div>
+        </section>
       </section>
 
       <section id="dataPanel" class="panel data-panel">
