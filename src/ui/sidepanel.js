@@ -775,17 +775,20 @@ function renderHistoryControls(totalCount, totalPages, options = {}) {
     renderHistoryTable();
   });
   pager.append(prev, text, next);
+  const selectedCount = Number(options.selectedCount || 0);
   const clearAllButton = renderClearAllHistoryButton(options);
+  const clearSelectionButton = renderClearHistorySelectionButton({ selectedCount });
+  const selectionActions = clearSelectionButton ? [clearSelectionButton] : [];
   if (isXAiReauthorizeMode(getRegisterMode())) {
     const authorizeSelectedButton = renderSelectedHistoryButton({
       text: "授权选中",
       variant: "primary",
-      selectedCount: Number(options.selectedCount || 0),
+      selectedCount,
       emptyTitle: "请先勾选 xAI 历史账号",
       activeTitle: "对选中的 xAI 历史账号重新授权",
       onClick: startSelectedXAiReauthorize
     });
-    wrapper.append(input, authorizeSelectedButton, clearAllButton, pager);
+    wrapper.append(input, authorizeSelectedButton, ...selectionActions, clearAllButton, pager);
     return wrapper;
   }
 
@@ -793,16 +796,16 @@ function renderHistoryControls(totalCount, totalPages, options = {}) {
     const deleteSelectedButton = renderSelectedHistoryButton({
       text: "删除选中",
       variant: "danger",
-      selectedCount: Number(options.selectedCount || 0),
+      selectedCount,
       emptyTitle: "请先勾选 xAI 历史账号",
       activeTitle: "删除选中的 xAI 本地历史记录",
       onClick: deleteSelectedXAiHistoryRecords
     });
-    wrapper.append(input, deleteSelectedButton, clearAllButton, pager);
+    wrapper.append(input, deleteSelectedButton, ...selectionActions, clearAllButton, pager);
     return wrapper;
   }
 
-  wrapper.append(input, clearAllButton, pager);
+  wrapper.append(input, ...selectionActions, clearAllButton, pager);
   return wrapper;
 }
 
@@ -822,6 +825,27 @@ function renderSelectedHistoryButton({
   button.title = selectedCount ? `${activeTitle}：${selectedCount} 个` : emptyTitle;
   button.addEventListener("click", onClick);
   return button;
+}
+
+function renderClearHistorySelectionButton({ selectedCount = 0 } = {}) {
+  if (!isXAiHistorySelectionEnabled() || selectedCount <= 0) {
+    return null;
+  }
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "table-action";
+  button.textContent = "清除选择";
+  button.disabled = isFlowBusy();
+  button.title = isFlowBusy()
+    ? "流程正在运行，暂不能清除选择"
+    : `清除当前已选择的 ${selectedCount} 个 xAI 历史账号`;
+  button.addEventListener("click", clearXAiHistorySelection);
+  return button;
+}
+
+function clearXAiHistorySelection() {
+  selectedXAiHistoryKeys.clear();
+  renderHistoryTable();
 }
 
 function renderClearAllHistoryButton(options = {}) {
