@@ -1,6 +1,7 @@
 import { RegisterNode, NodeResult, buildFlowStoppedResult, isFlowStopped } from "../core/flow.js";
 import { waitForAnyCondition } from "../core/browser.js";
 import { createLogger } from "../core/logger.js";
+import { isOpenAiPhoneFirstRegisterFlow } from "../core/openAiRegisterFlows.js";
 
 const logger = createLogger("node.sms-code");
 const DEFAULT_SMS_WAIT_TIMEOUT_SECONDS = 60;
@@ -10,7 +11,8 @@ export class WaitSmsVerificationCodeNode extends RegisterNode {
   static statuses = {
     success: "phone_verified",
     aboutYouReady: "phone_verified_about_you_ready",
-    retrySelectCodexAccount: "sms_verification_retry_select_codex_account"
+    retrySelectCodexAccount: "sms_verification_retry_select_codex_account",
+    retryStartup: "sms_verification_retry_startup"
   };
 
   constructor() {
@@ -32,9 +34,26 @@ export class WaitSmsVerificationCodeNode extends RegisterNode {
         mobile: mobileNumber.mobileNumber,
         resendAttempts
       });
-      const waitResult = await waitForSmsCodeOrWhatsApp(ctx, mobileNumber);
+      const waitResult = await waitForSmsCodeOrPageFailure(ctx, mobileNumber);
       if (isFlowStopped(ctx)) {
         return buildFlowStoppedResult();
+      }
+      if (waitResult.type === "text_send_error") {
+        const message = waitResult.detail?.text || "无法向此电话号码发送文本消息";
+        logger.warn("检测到页面提示无法发送短信，短信服务无法接收验证码", {
+          mobile: mobileNumber.mobileNumber,
+          error: waitResult.detail
+        });
+        await ctx.services.smsService.callback(mobileNumber, false);
+        return buildRetryOrFail(
+          ctx,
+          "sms_verification_text_send_failed",
+          message,
+          "",
+          {
+            textSendError: waitResult.detail || null
+          }
+        );
       }
       if (waitResult.type === "whatsapp") {
         logger.warn("检测到验证码通过 WhatsApp 发送，短信服务无法接收", {
@@ -74,6 +93,24 @@ export class WaitSmsVerificationCodeNode extends RegisterNode {
         if (resendAttempts < 1) {
           const resent = await clickResend(ctx);
           if (resent) {
+            const textSendError = await waitForTextSendError(ctx, 3000);
+            if (textSendError) {
+              const message = textSendError.text || "无法向此电话号码发送文本消息";
+              logger.warn("短信验证码重发后检测到无法发送文本消息", {
+                mobile: mobileNumber.mobileNumber,
+                error: textSendError
+              });
+              await ctx.services.smsService.callback(mobileNumber, false);
+              return buildRetryOrFail(
+                ctx,
+                "sms_verification_text_send_failed",
+                message,
+                "",
+                {
+                  textSendError
+                }
+              );
+            }
             resendAttempts += 1;
             ctx.state.phoneSubmittedAt = new Date().toISOString();
             continue;
@@ -113,6 +150,24 @@ export class WaitSmsVerificationCodeNode extends RegisterNode {
         if (resendAttempts < 1) {
           const resent = await clickResend(ctx);
           if (resent) {
+            const textSendError = await waitForTextSendError(ctx, 3000);
+            if (textSendError) {
+              const message = textSendError.text || "无法向此电话号码发送文本消息";
+              logger.warn("短信验证码重发后检测到无法发送文本消息", {
+                mobile: mobileNumber.mobileNumber,
+                error: textSendError
+              });
+              await ctx.services.smsService.callback(mobileNumber, false);
+              return buildRetryOrFail(
+                ctx,
+                "sms_verification_text_send_failed",
+                message,
+                code,
+                {
+                  textSendError
+                }
+              );
+            }
             resendAttempts += 1;
             ctx.state.phoneSubmittedAt = new Date().toISOString();
             continue;
@@ -134,7 +189,7 @@ export class WaitSmsVerificationCodeNode extends RegisterNode {
   }
 }
 
-async function waitForSmsCodeOrWhatsApp(ctx, mobileNumber) {
+async function waitForSmsCodeOrPageFailure(ctx, mobileNumber) {
   const controller = new AbortController();
   const onAbort = () => controller.abort();
   ctx.signal?.addEventListener?.("abort", onAbort, { once: true });
@@ -157,7 +212,17 @@ async function waitForSmsCodeOrWhatsApp(ctx, mobileNumber) {
           type: "code",
           code: ""
         });
-    const result = await Promise.race([codePromise, whatsappPromise]);
+    const textSendErrorPromise = waitForTextSendError(ctx, getSmsVerificationWaitTimeoutMs(ctx), controller.signal)
+      .then((result) => result
+        ? {
+          type: "text_send_error",
+          detail: result
+        }
+        : {
+          type: "code",
+          code: ""
+        });
+    const result = await Promise.race([codePromise, whatsappPromise, textSendErrorPromise]);
     controller.abort();
     return result;
   } finally {
@@ -177,6 +242,71 @@ async function waitForWhatsAppResendButton(ctx, signal, timeoutMs) {
     intervalMs: 1000,
     label: "WhatsApp 重发按钮",
     signal
+  });
+}
+
+async function waitForTextSendError(ctx, timeoutMs, signal = null) {
+  const result = await waitForAnyCondition([
+    {
+      name: "text_send_error",
+      check: () => detectTextSendError(ctx)
+    }
+  ], {
+    timeoutMs,
+    intervalMs: 500,
+    label: "短信无法发送错误",
+    signal
+  });
+  return result.matched ? result.value : null;
+}
+
+async function detectTextSendError(ctx) {
+  return ctx.tabs.execute(() => {
+    const keywords = [
+      "无法向此电话号码发送文本消息",
+      "无法向该电话号码发送文本消息",
+      "无法发送文本消息",
+      "无法发送短信",
+      "can't send text messages to this phone number",
+      "can't send a text message to this phone number",
+      "cannot send text messages to this phone number",
+      "unable to send text messages to this phone number",
+      "unable to send a text message to this phone number",
+      "we can't send text messages to this phone number",
+      "we can’t send text messages to this phone number"
+    ];
+    const elements = Array.from(document.querySelectorAll([
+      "[role='alert']",
+      "[aria-live]",
+      "p",
+      "div",
+      "span",
+      "li"
+    ].join(",")));
+    for (const element of elements) {
+      if (!isVisible(element)) {
+        continue;
+      }
+      const text = String(element.textContent || "").replace(/\s+/g, " ").trim();
+      const normalized = text.toLowerCase();
+      if (text && keywords.some((keyword) => normalized.includes(keyword.toLowerCase()))) {
+        return {
+          text,
+          tagName: element.tagName,
+          role: element.getAttribute("role") || "",
+          ariaLive: element.getAttribute("aria-live") || "",
+          className: String(element.className || "")
+        };
+      }
+    }
+    return null;
+
+    function isVisible(element) {
+      const style = window.getComputedStyle(element);
+      return style.visibility !== "hidden"
+        && style.display !== "none"
+        && element.getClientRects().length > 0;
+    }
   });
 }
 
@@ -308,7 +438,10 @@ function buildRetryOrFail(ctx, failureStatus, message, code, extraData = {}) {
     });
   }
   ctx.state.smsVerificationRetryCount = currentRetryCount + 1;
-  return NodeResult.ok(WaitSmsVerificationCodeNode.statuses.retrySelectCodexAccount, {
+  const retryStatus = isOpenAiPhoneFirstRegisterFlow(ctx.config.register?.openAiRegisterFlow || ctx.state.openAiRegisterFlow)
+    ? WaitSmsVerificationCodeNode.statuses.retryStartup
+    : WaitSmsVerificationCodeNode.statuses.retrySelectCodexAccount;
+  return NodeResult.ok(retryStatus, {
     smsVerificationCode: code,
     smsVerificationRetryCount: ctx.state.smsVerificationRetryCount,
     ...extraData

@@ -174,7 +174,8 @@ function buildPhoneFirstRegisterFlow() {
         { status: CreatePasswordNode.statuses.aboutYouReady, target: FillAboutYouNode.name }
       ],
       [WaitSmsVerificationCodeNode.name]: [
-        { status: WaitSmsVerificationCodeNode.statuses.retrySelectCodexAccount, target: OpenChatGptPhoneFirstNode.name },
+        { status: WaitSmsVerificationCodeNode.statuses.retryStartup, target: StartupInitializeNode.name },
+        { status: WaitSmsVerificationCodeNode.statuses.retrySelectCodexAccount, target: StartupInitializeNode.name },
         { status: WaitSmsVerificationCodeNode.statuses.success, target: SubmitCodexConsentNode.name },
         { status: WaitSmsVerificationCodeNode.statuses.aboutYouReady, target: FillAboutYouNode.name }
       ],
@@ -380,7 +381,7 @@ const PHONE_FIRST_REGISTER_MANUAL_RETRY_POLICIES = Object.freeze({
   [OpenChatGptPhoneFirstNode.name]: RETRY_REFRESH,
   [PhoneFirstAddPhoneNumberNode.name]: RETRY_DIRECT,
   [CreatePasswordNode.name]: RETRY_REFRESH,
-  [WaitSmsVerificationCodeNode.name]: retryFromNode(OpenChatGptPhoneFirstNode.name),
+  [WaitSmsVerificationCodeNode.name]: retryFromNode(StartupInitializeNode.name),
   [FillAboutYouNode.name]: RETRY_REFRESH,
   [SelectCodexAccountNode.name]: RETRY_DIRECT,
   [PhoneFirstAddEmailNode.name]: RETRY_REFRESH,

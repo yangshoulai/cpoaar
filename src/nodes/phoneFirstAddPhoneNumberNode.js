@@ -85,12 +85,18 @@ export class PhoneFirstAddPhoneNumberNode extends RegisterNode {
       provider: mobileNumber.attributes?.provider || ""
     });
 
-    const selector = await resolvePhoneInputSelector(ctx);
-    const fillResult = await ctx.tabs.fill(selector, `+${account.mobile}`);
+    const fillResult = await fillPhoneFirstPhoneInput(ctx, `+${account.mobile}`);
     if (!fillResult.ok) {
       await ctx.services.smsService.callback(mobileNumber, false);
-      return NodeResult.fail("phone_submit_failed", "未找到手机号输入框");
+      return NodeResult.fail("phone_submit_failed", fillResult.error || "未找到手机号输入框");
     }
+    logger.info("手机优先注册手机号填充完成", {
+      mobile: account.mobile,
+      provider: mobileNumber.attributes?.provider || "",
+      value: fillResult.value || "",
+      method: fillResult.method || "",
+      selector: fillResult.selector || ""
+    });
 
     const whatsappDefaultNotice = await waitForWhatsAppDefaultNotice(ctx);
     if (whatsappDefaultNotice) {
@@ -180,17 +186,209 @@ function prepareAccount(ctx) {
   return account;
 }
 
-async function resolvePhoneInputSelector(ctx) {
-  if (await ctx.tabs.query(CHATGPT_PHONE_INPUT_SELECTOR)) {
-    return CHATGPT_PHONE_INPUT_SELECTOR;
-  }
-  if (await ctx.tabs.query("input[id='input']")) {
-    return "input[id='input']";
-  }
-  if (await ctx.tabs.query("input[id='tel']")) {
-    return "input[id='tel']";
-  }
-  return "input[type='tel']";
+async function fillPhoneFirstPhoneInput(ctx, fullMobileNumber) {
+  const result = await ctx.tabs.execute(async (expectedValue, primarySelector) => {
+    const expectedDigits = normalizeDigits(expectedValue);
+    const candidates = findPhoneInputs(primarySelector);
+    for (const input of candidates) {
+      const methods = [
+        ["paste", () => fillWithPasteEvent(input, expectedValue)],
+        ["native", () => fillWithNativeSetter(input, expectedValue)],
+        ["execCommand", () => fillWithExecCommand(input, expectedValue)],
+        ["incremental", () => fillIncrementally(input, expectedValue)]
+      ];
+      for (const [method, fill] of methods) {
+        await fill();
+        await sleep(350);
+        const currentValue = input.value || "";
+        if (isAcceptablePhoneValue(currentValue, expectedDigits)) {
+          return {
+            ok: true,
+            value: currentValue,
+            method,
+            selector: describeInput(input)
+          };
+        }
+      }
+    }
+    return {
+      ok: false,
+      value: candidates[0]?.value || "",
+      method: "",
+      selector: candidates[0] ? describeInput(candidates[0]) : "",
+      error: candidates.length
+        ? "手机号输入框未能填入，请检查页面电话输入组件"
+        : "未找到可见手机号输入框"
+    };
+
+    function findPhoneInputs(selector) {
+      const selectors = [
+        selector,
+        "input[name='phoneNumberInput']",
+        "input[type='tel']",
+        "input[autocomplete='tel']",
+        "input[id='tel']",
+        "input[id='input']"
+      ];
+      return [...new Set(selectors.flatMap((item) => Array.from(document.querySelectorAll(item))))]
+        .filter((element) => element instanceof HTMLInputElement)
+        .filter(isEditableVisibleInput);
+    }
+
+    function isEditableVisibleInput(element) {
+      const style = window.getComputedStyle(element);
+      const rect = element.getBoundingClientRect();
+      const type = (element.getAttribute("type") || "text").toLowerCase();
+      return !element.disabled
+        && !element.readOnly
+        && type !== "hidden"
+        && style.visibility !== "hidden"
+        && style.display !== "none"
+        && rect.width > 0
+        && rect.height > 0;
+    }
+
+    async function fillWithPasteEvent(input, value) {
+      input.scrollIntoView({ block: "center", inline: "center" });
+      input.focus();
+      selectAll(input);
+      setNativeValue(input, "");
+      dispatchTextEvents(input, "", "deleteContentBackward");
+
+      const clipboardData = new DataTransfer();
+      clipboardData.setData("text/plain", value);
+      input.dispatchEvent(new ClipboardEvent("paste", {
+        bubbles: true,
+        cancelable: true,
+        clipboardData
+      }));
+      await sleep(80);
+
+      if (!isAcceptablePhoneValue(input.value || "", expectedDigits)) {
+        document.execCommand?.("insertText", false, value);
+        dispatchTextEvents(input, value, "insertFromPaste");
+      }
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+
+    function fillWithNativeSetter(input, value) {
+      input.scrollIntoView({ block: "center", inline: "center" });
+      input.focus();
+      selectAll(input);
+      setNativeValue(input, "");
+      dispatchTextEvents(input, "", "deleteContentBackward");
+      setNativeValue(input, value);
+      dispatchKeyboardEvents(input, value);
+      dispatchTextEvents(input, value, "insertText");
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+
+    function fillWithExecCommand(input, value) {
+      input.scrollIntoView({ block: "center", inline: "center" });
+      input.focus();
+      selectAll(input);
+      document.execCommand?.("delete", false);
+      document.execCommand?.("insertText", false, value);
+      dispatchTextEvents(input, value, "insertText");
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+
+    function fillIncrementally(input, value) {
+      input.scrollIntoView({ block: "center", inline: "center" });
+      input.focus();
+      selectAll(input);
+      setNativeValue(input, "");
+      dispatchTextEvents(input, "", "deleteContentBackward");
+      let currentValue = "";
+      for (const char of String(value)) {
+        currentValue += char;
+        setNativeValue(input, currentValue);
+        input.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: char }));
+        dispatchTextEvents(input, char, "insertText");
+        input.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, key: char }));
+      }
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+
+    function setNativeValue(input, value) {
+      const valueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
+      if (valueSetter) {
+        valueSetter.call(input, value);
+      } else {
+        input.value = value;
+      }
+    }
+
+    function selectAll(input) {
+      try {
+        input.setSelectionRange(0, input.value.length);
+      } catch {
+        input.select?.();
+      }
+    }
+
+    function dispatchKeyboardEvents(input, value) {
+      input.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: String(value).slice(-1) || "" }));
+      input.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, key: String(value).slice(-1) || "" }));
+    }
+
+    function dispatchTextEvents(input, data, inputType) {
+      input.dispatchEvent(new InputEvent("beforeinput", {
+        bubbles: true,
+        cancelable: true,
+        data,
+        inputType
+      }));
+      input.dispatchEvent(new InputEvent("input", {
+        bubbles: true,
+        data,
+        inputType
+      }));
+    }
+
+    function isAcceptablePhoneValue(value, expected) {
+      const digits = normalizeDigits(value);
+      if (!digits || digits.length < Math.min(6, expected.length)) {
+        return false;
+      }
+      return digits === expected
+        || digits.endsWith(expected)
+        || expected.endsWith(digits)
+        || digits.includes(expected)
+        || expected.includes(digits)
+        || digits.length >= Math.min(8, expected.length);
+    }
+
+    function normalizeDigits(value) {
+      return String(value || "").replace(/\D/g, "");
+    }
+
+    function sleep(ms) {
+      return new Promise((resolve) => setTimeout(resolve, ms));
+    }
+
+    function describeInput(input) {
+      const parts = [];
+      if (input.name) {
+        parts.push(`name=${input.name}`);
+      }
+      if (input.id) {
+        parts.push(`id=${input.id}`);
+      }
+      if (input.type) {
+        parts.push(`type=${input.type}`);
+      }
+      if (input.placeholder) {
+        parts.push(`placeholder=${input.placeholder}`);
+      }
+      return parts.join(" ");
+    }
+  }, [fullMobileNumber, CHATGPT_PHONE_INPUT_SELECTOR]);
+  return result || {
+    ok: false,
+    value: "",
+    error: "手机号输入脚本未返回结果"
+  };
 }
 
 async function resetToPhoneFirstEntry(ctx) {
