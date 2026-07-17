@@ -240,9 +240,11 @@ const RESULT_STATUS_LABELS = {
   xai_email_submitted: "xAI 邮箱已提交",
   xai_email_verified: "xAI 邮箱已验证",
   xai_profile_submitted: "xAI 资料已提交",
+  xai_existing_email_sign_in_ready: "邮箱已存在，进入登录",
   xai_turnstile_timeout: "xAI Turnstile 超时",
-  xai_registration_completed: "xAI 注册完成",
+  xai_registration_completed: "xAI账号管理页面",
   xai_sign_in_completed: "xAI 登录完成",
+  xai_existing_email_sign_in_failed: "邮箱已存在登录入口失败",
   xai_sign_in_account_missing: "缺少 xAI 授权邮箱",
   xai_sign_in_email_input_missing: "缺少 xAI 邮箱输入框",
   xai_sign_in_next_submit_failed: "xAI 下一步失败",
@@ -2913,6 +2915,10 @@ function resolveSnapshotRunMode(snapshot = {}) {
     return RUN_MODES.xaiRegister;
   }
   if (snapshot.currentNode === "xai_sign_in") {
+    const nodeResults = snapshot.nodeResults || {};
+    if (nodeResults.xai_open_signup_page || nodeResults.xai_wait_email_verification_code || nodeResults.xai_fill_profile) {
+      return RUN_MODES.xaiRegister;
+    }
     return RUN_MODES.xaiReauthorize;
   }
   if (["reauthorize_phone_challenge", "reauthorize_account_deleted", "reauthorize_delete_account"].includes(snapshot.currentNode)) {

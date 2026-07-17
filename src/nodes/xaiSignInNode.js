@@ -8,6 +8,7 @@ const TURNSTILE_WAIT_TIMEOUT_MS = 120000;
 const LOGIN_AFTER_CLICK_FAST_WAIT_MS = 10000;
 const LOGIN_AFTER_CLICK_FOLLOWUP_WAIT_MS = 35000;
 const LOGIN_SUBMIT_MAX_ATTEMPTS = 3;
+const PASSWORD_INPUT_SELECTOR = "input[name='password']";
 
 export class XAiSignInNode extends RegisterNode {
   static name = "xai_sign_in";
@@ -16,7 +17,7 @@ export class XAiSignInNode extends RegisterNode {
   };
 
   constructor() {
-    super(XAiSignInNode.name, "xAI 登录");
+    super(XAiSignInNode.name, "登录");
   }
 
   async execute(ctx) {
@@ -39,8 +40,13 @@ export class XAiSignInNode extends RegisterNode {
       password
     };
 
-    logger.info("打开 xAI 登录页面", { email: emailAddress });
-    await ctx.tabs.open(XAI_SIGN_IN_URL);
+    const currentUrl = await ctx.tabs.getCurrentUrlIfAvailable().catch(() => "");
+    if (isXAiSignInUrl(currentUrl) || isXAiAccountUrl(currentUrl)) {
+      logger.info("复用当前 xAI 登录页面", { email: emailAddress, currentUrl });
+    } else {
+      logger.info("打开 xAI 登录页面", { email: emailAddress });
+      await ctx.tabs.open(XAI_SIGN_IN_URL);
+    }
 
     const emailInputReady = await waitForAnyCondition([
       {
@@ -49,7 +55,7 @@ export class XAiSignInNode extends RegisterNode {
       },
       {
         name: "email_input",
-        check: () => ctx.tabs.query("input[type='email']")
+        check: () => ctx.tabs.findEmailInput()
       }
     ], {
       timeoutMs: 30000,
@@ -67,7 +73,7 @@ export class XAiSignInNode extends RegisterNode {
       return NodeResult.fail("xai_sign_in_email_input_missing", `未找到 xAI 登录邮箱输入框: ${await ctx.tabs.getCurrentUrl()}`);
     }
 
-    const fillEmailResult = await ctx.tabs.fill("input[type='email']", emailAddress);
+    const fillEmailResult = await ctx.tabs.fillEmailInput(emailAddress);
     if (!fillEmailResult.ok) {
       return NodeResult.fail("xai_sign_in_email_input_missing", "xAI 登录邮箱输入失败");
     }
@@ -88,7 +94,7 @@ export class XAiSignInNode extends RegisterNode {
       },
       {
         name: "password_input",
-        check: () => ctx.tabs.query("input[name='password']")
+        check: () => ctx.tabs.query(PASSWORD_INPUT_SELECTOR)
       },
       {
         name: "turnstile",
@@ -120,7 +126,7 @@ export class XAiSignInNode extends RegisterNode {
       const passwordInputReady = await waitForAnyCondition([
         {
           name: "password_input",
-          check: () => ctx.tabs.query("input[name='password']")
+          check: () => ctx.tabs.query(PASSWORD_INPUT_SELECTOR)
         }
       ], {
         timeoutMs: 30000,
@@ -132,7 +138,7 @@ export class XAiSignInNode extends RegisterNode {
       }
     }
 
-    const fillPasswordResult = await ctx.tabs.fill("input[name='password']", password);
+    const fillPasswordResult = await ctx.tabs.fill(PASSWORD_INPUT_SELECTOR, password);
     if (!fillPasswordResult.ok) {
       return NodeResult.fail("xai_sign_in_password_input_missing", "xAI 登录密码输入失败");
     }
@@ -149,13 +155,14 @@ export class XAiSignInNode extends RegisterNode {
       return NodeResult.fail(accountReady.status, accountReady.error, accountReady.data || {});
     }
 
+    const accountUrl = accountReady.currentUrl || accountReady.value || await ctx.tabs.getCurrentUrl();
     logger.info("xAI 登录完成", {
       email: emailAddress,
-      currentUrl: accountReady.value
+      currentUrl: accountUrl
     });
     return NodeResult.ok(XAiSignInNode.statuses.success, {
       account: ctx.state.account,
-      currentUrl: accountReady.value
+      currentUrl: accountUrl
     });
   }
 }
@@ -284,7 +291,7 @@ async function ensurePasswordInputValue(ctx, password) {
   if (!state?.exists || state.valueLength > 0) {
     return state;
   }
-  return ctx.tabs.fill("input[name='password']", password);
+  return ctx.tabs.fill(PASSWORD_INPUT_SELECTOR, password);
 }
 
 async function getPasswordInputState(ctx) {
@@ -561,7 +568,16 @@ async function getXAiAccountUrl(ctx) {
 function isXAiAccountUrl(value) {
   try {
     const url = new URL(value || "");
-    return url.hostname.endsWith("x.ai") && url.pathname === "/account";
+    return url.hostname.endsWith("x.ai") && url.pathname.startsWith("/account");
+  } catch {
+    return false;
+  }
+}
+
+function isXAiSignInUrl(value) {
+  try {
+    const url = new URL(value || "");
+    return url.hostname === "accounts.x.ai" && url.pathname.startsWith("/sign-in");
   } catch {
     return false;
   }

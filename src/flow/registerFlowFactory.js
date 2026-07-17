@@ -204,6 +204,7 @@ function buildXAiRegisterFlow() {
     new XAiOpenSignupPageNode(),
     new XAiWaitEmailVerificationCodeNode(),
     new XAiFillProfileNode(),
+    new XAiSignInNode(),
     new XAiWaitRegistrationCompleteNode(),
     new XAiRefreshOAuthAndLoginNode(),
     new XAiSubmitConsentNode()
@@ -222,10 +223,15 @@ function buildXAiRegisterFlow() {
         { status: XAiWaitEmailVerificationCodeNode.statuses.success, target: XAiFillProfileNode.name }
       ],
       [XAiFillProfileNode.name]: [
-        { status: XAiFillProfileNode.statuses.success, target: XAiWaitRegistrationCompleteNode.name }
+        { status: XAiFillProfileNode.statuses.success, target: XAiWaitRegistrationCompleteNode.name },
+        { status: XAiFillProfileNode.statuses.signInReady, target: XAiSignInNode.name }
+      ],
+      [XAiSignInNode.name]: [
+        { status: XAiSignInNode.statuses.success, target: XAiWaitRegistrationCompleteNode.name }
       ],
       [XAiWaitRegistrationCompleteNode.name]: [
-        { status: XAiWaitRegistrationCompleteNode.statuses.success, target: XAiRefreshOAuthAndLoginNode.name }
+        { status: XAiWaitRegistrationCompleteNode.statuses.success, target: XAiRefreshOAuthAndLoginNode.name },
+        { status: XAiWaitRegistrationCompleteNode.statuses.signInReady, target: XAiSignInNode.name }
       ],
       [XAiRefreshOAuthAndLoginNode.name]: [
         { status: XAiRefreshOAuthAndLoginNode.statuses.consent, target: XAiSubmitConsentNode.name }
@@ -331,6 +337,7 @@ export const XAI_REGISTER_NODE_ORDER = [
   XAiOpenSignupPageNode.name,
   XAiWaitEmailVerificationCodeNode.name,
   XAiFillProfileNode.name,
+  XAiSignInNode.name,
   XAiWaitRegistrationCompleteNode.name,
   XAiRefreshOAuthAndLoginNode.name,
   XAiSubmitConsentNode.name
@@ -410,6 +417,7 @@ const XAI_REGISTER_MANUAL_RETRY_POLICIES = Object.freeze({
   [XAiOpenSignupPageNode.name]: retryFromNode(XAiOpenSignupPageNode.name),
   [XAiWaitEmailVerificationCodeNode.name]: retryFromNode(XAiOpenSignupPageNode.name),
   [XAiFillProfileNode.name]: retryFromNode(XAiOpenSignupPageNode.name),
+  [XAiSignInNode.name]: retryFromNode(XAiSignInNode.name),
   [XAiWaitRegistrationCompleteNode.name]: RETRY_REFRESH,
   [XAiRefreshOAuthAndLoginNode.name]: RETRY_DIRECT,
   [XAiSubmitConsentNode.name]: retryFromNode(XAiRefreshOAuthAndLoginNode.name)

@@ -1,9 +1,19 @@
 import { RegisterNode, NodeResult } from "../core/flow.js";
-import { waitForAnyCondition } from "../core/browser.js";
+import { sleep, waitForAnyCondition } from "../core/browser.js";
 import { createLogger } from "../core/logger.js";
 import { clickVisibleButtonByText, findVisibleButtonByText, XAI_SIGN_UP_URL } from "./xaiHelpers.js";
 
 const logger = createLogger("node.xai-signup");
+const EMAIL_ENTRY_BUTTON_KEYWORDS = [
+  "使用邮箱注册",
+  "使用邮箱登录",
+  "sign up with email",
+  "sign in with email",
+  "log in with email",
+  "continue with email"
+];
+const EMAIL_ENTRY_CLICK_MAX_ATTEMPTS = 2;
+const EMAIL_ENTRY_CLICK_DELAY_MS = 1000;
 
 export class XAiOpenSignupPageNode extends RegisterNode {
   static name = "xai_open_signup_page";
@@ -19,14 +29,17 @@ export class XAiOpenSignupPageNode extends RegisterNode {
     const { account, emailAccount, reused } = await prepareAccountAndEmail(ctx);
 
     await ctx.tabs.open(XAI_SIGN_UP_URL);
+    await ctx.tabs.waitForTabLoaded();
+    await sleep(EMAIL_ENTRY_CLICK_DELAY_MS, ctx.signal);
+
     const emailEntryResult = await waitForAnyCondition([
       {
         name: "email_signup_button",
-        check: () => findVisibleButtonByText(ctx, ["使用邮箱注册", "sign up with email", "email"])
+        check: () => findVisibleButtonByText(ctx, EMAIL_ENTRY_BUTTON_KEYWORDS)
       },
       {
         name: "email_input",
-        check: () => ctx.tabs.query("input[type='email']")
+        check: () => ctx.tabs.findEmailInput()
       }
     ], {
       timeoutMs: 30000,
@@ -38,27 +51,13 @@ export class XAiOpenSignupPageNode extends RegisterNode {
     }
 
     if (emailEntryResult.name === "email_signup_button") {
-      const clickEmailButton = await clickVisibleButtonByText(ctx, ["使用邮箱注册", "sign up with email", "email"]);
-      if (!clickEmailButton.ok) {
-        return NodeResult.fail("xai_signup_email_button_missing", "使用邮箱注册按钮点击失败");
-      }
-
-      const emailInputResult = await waitForAnyCondition([
-        {
-          name: "email_input",
-          check: () => ctx.tabs.query("input[type='email']")
-        }
-      ], {
-        timeoutMs: 15000,
-        label: "xAI 邮箱输入框",
-        signal: ctx.signal
-      });
-      if (!emailInputResult.matched) {
-        return NodeResult.fail("xai_signup_email_input_missing", `未找到 xAI 邮箱输入框: ${await ctx.tabs.getCurrentUrl()}`);
+      const entryResult = await clickEmailEntryButtonAndWaitForInput(ctx);
+      if (!entryResult.ok) {
+        return NodeResult.fail(entryResult.status, entryResult.error, entryResult.data || {});
       }
     }
 
-    const fillResult = await ctx.tabs.fill("input[type='email']", emailAccount.emailAddress);
+    const fillResult = await ctx.tabs.fillEmailInput(emailAccount.emailAddress);
     if (!fillResult.ok) {
       return NodeResult.fail("xai_signup_email_input_missing", "xAI 邮箱输入失败");
     }
@@ -81,6 +80,64 @@ export class XAiOpenSignupPageNode extends RegisterNode {
       currentUrl: await ctx.tabs.getCurrentUrl()
     });
   }
+}
+
+async function clickEmailEntryButtonAndWaitForInput(ctx) {
+  for (let attempt = 1; attempt <= EMAIL_ENTRY_CLICK_MAX_ATTEMPTS; attempt += 1) {
+    const existingInput = await ctx.tabs.findEmailInput();
+    if (existingInput) {
+      return {
+        ok: true,
+        attempts: attempt - 1
+      };
+    }
+
+    const clickEmailButton = await clickVisibleButtonByText(ctx, EMAIL_ENTRY_BUTTON_KEYWORDS);
+    if (!clickEmailButton.ok) {
+      return {
+        ok: false,
+        status: "xai_signup_email_button_missing",
+        error: "使用邮箱注册/登录按钮点击失败"
+      };
+    }
+
+    const emailInputResult = await waitForEmailInput(ctx, 15000);
+    if (emailInputResult.matched) {
+      return {
+        ok: true,
+        attempts: attempt,
+        button: clickEmailButton.button
+      };
+    }
+
+    logger.warn("点击 xAI 邮箱入口后未出现邮箱输入框", {
+      attempt,
+      maxAttempts: EMAIL_ENTRY_CLICK_MAX_ATTEMPTS,
+      currentUrl: await ctx.tabs.getCurrentUrl()
+    });
+    if (attempt < EMAIL_ENTRY_CLICK_MAX_ATTEMPTS) {
+      await sleep(EMAIL_ENTRY_CLICK_DELAY_MS, ctx.signal);
+    }
+  }
+
+  return {
+    ok: false,
+    status: "xai_signup_email_input_missing",
+    error: `未找到 xAI 邮箱输入框: ${await ctx.tabs.getCurrentUrl()}`
+  };
+}
+
+async function waitForEmailInput(ctx, timeoutMs) {
+  return waitForAnyCondition([
+    {
+      name: "email_input",
+      check: () => ctx.tabs.findEmailInput()
+    }
+  ], {
+    timeoutMs,
+    label: "xAI 邮箱输入框",
+    signal: ctx.signal
+  });
 }
 
 async function prepareAccountAndEmail(ctx) {
@@ -140,6 +197,7 @@ async function clickXAiEmailSubmitButton(ctx) {
         const text = String(item.textContent || "").trim().toLowerCase();
         return isClickable(item)
           && !text.includes("使用邮箱注册")
+          && !text.includes("使用邮箱登录")
           && !text.includes("with email")
           && (text === "注册" || text.includes("sign up") || text.includes("continue"));
       });
@@ -169,5 +227,5 @@ async function clickXAiEmailSubmitButton(ctx) {
   if (preciseResult.ok) {
     return preciseResult;
   }
-  return clickVisibleButtonByText(ctx, ["sign up", "continue"]);
+  return clickVisibleButtonByText(ctx, ["注册", "sign up", "continue"]);
 }

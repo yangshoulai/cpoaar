@@ -1,15 +1,24 @@
 import { RegisterNode, NodeResult } from "../core/flow.js";
 import { waitForAnyCondition } from "../core/browser.js";
 import { createLogger } from "../core/logger.js";
-import { clickVisibleButtonByText } from "./xaiHelpers.js";
+import { clickVisibleButtonByText, findVisibleButtonByText } from "./xaiHelpers.js";
 
 const logger = createLogger("node.xai-profile");
 const TURNSTILE_WAIT_TIMEOUT_MS = 120000;
+const EXISTING_EMAIL_SIGN_IN_BUTTON_KEYWORDS = [
+  "使用邮箱登录",
+  "sign in with email",
+  "log in with email",
+  "continue with email"
+];
+const PROFILE_SUBMIT_OUTCOME_TIMEOUT_MS = 10000;
+const SIGN_IN_NAVIGATION_TIMEOUT_MS = 15000;
 
 export class XAiFillProfileNode extends RegisterNode {
   static name = "xai_fill_profile";
   static statuses = {
-    success: "xai_profile_submitted"
+    success: "xai_profile_submitted",
+    signInReady: "xai_existing_email_sign_in_ready"
   };
 
   constructor() {
@@ -83,9 +92,121 @@ export class XAiFillProfileNode extends RegisterNode {
     logger.info("xAI 资料已提交", {
       submitButton: submitResult.button?.text || ""
     });
+
+    const outcome = await waitForProfileSubmitOutcome(ctx);
+    if (outcome.status === "sign_in_ready") {
+      return NodeResult.ok(XAiFillProfileNode.statuses.signInReady, {
+        account,
+        currentUrl: outcome.currentUrl || await ctx.tabs.getCurrentUrl(),
+        existingEmail: true
+      });
+    }
+    if (outcome.status === "failed") {
+      return NodeResult.fail(outcome.failStatus, outcome.error, outcome.data || {});
+    }
+
     return NodeResult.ok(XAiFillProfileNode.statuses.success, {
       currentUrl: await ctx.tabs.getCurrentUrl()
     });
+  }
+}
+
+async function waitForProfileSubmitOutcome(ctx) {
+  const result = await waitForAnyCondition([
+    {
+      name: "account_page",
+      check: () => getXAiAccountPageUrl(ctx)
+    },
+    {
+      name: "sign_in_email_input",
+      check: () => ctx.tabs.findEmailInput()
+    },
+    {
+      name: "existing_email_sign_in_button",
+      check: () => findVisibleButtonByText(ctx, EXISTING_EMAIL_SIGN_IN_BUTTON_KEYWORDS)
+    }
+  ], {
+    timeoutMs: PROFILE_SUBMIT_OUTCOME_TIMEOUT_MS,
+    intervalMs: 500,
+    label: "xAI 资料提交结果",
+    signal: ctx.signal
+  });
+
+  if (!result.matched || result.name === "account_page") {
+    return {
+      status: "continue",
+      currentUrl: result.value || ""
+    };
+  }
+  if (result.name === "sign_in_email_input") {
+    return {
+      status: "sign_in_ready",
+      currentUrl: await ctx.tabs.getCurrentUrl()
+    };
+  }
+
+  const clickResult = await clickVisibleButtonByText(ctx, EXISTING_EMAIL_SIGN_IN_BUTTON_KEYWORDS);
+  if (!clickResult.ok) {
+    return {
+      status: "failed",
+      failStatus: "xai_existing_email_sign_in_failed",
+      error: "邮箱已存在页面的使用邮箱登录按钮点击失败"
+    };
+  }
+
+  const signInReady = await waitForAnyCondition([
+    {
+      name: "sign_in_url",
+      check: () => getXAiSignInUrl(ctx)
+    },
+    {
+      name: "sign_in_email_input",
+      check: () => ctx.tabs.findEmailInput()
+    }
+  ], {
+    timeoutMs: SIGN_IN_NAVIGATION_TIMEOUT_MS,
+    intervalMs: 500,
+    label: "xAI 已存在邮箱登录入口",
+    signal: ctx.signal
+  });
+
+  if (!signInReady.matched) {
+    logger.warn("点击使用邮箱登录后未检测到登录页，后续登录节点会重新打开登录页", {
+      currentUrl: await ctx.tabs.getCurrentUrl()
+    });
+  }
+
+  return {
+    status: "sign_in_ready",
+    currentUrl: signInReady.value || await ctx.tabs.getCurrentUrl()
+  };
+}
+
+async function getXAiAccountPageUrl(ctx) {
+  const currentUrl = await ctx.tabs.getCurrentUrl();
+  return isXAiAccountPage(currentUrl) ? currentUrl : null;
+}
+
+async function getXAiSignInUrl(ctx) {
+  const currentUrl = await ctx.tabs.getCurrentUrl();
+  return isXAiSignInPage(currentUrl) ? currentUrl : null;
+}
+
+function isXAiAccountPage(value) {
+  try {
+    const url = new URL(value || "");
+    return url.hostname === "accounts.x.ai" && url.pathname.startsWith("/account");
+  } catch {
+    return false;
+  }
+}
+
+function isXAiSignInPage(value) {
+  try {
+    const url = new URL(value || "");
+    return url.hostname === "accounts.x.ai" && url.pathname.startsWith("/sign-in");
+  } catch {
+    return false;
   }
 }
 
