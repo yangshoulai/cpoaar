@@ -553,9 +553,14 @@ async function startManualReauthorize() {
     return;
   }
   clearBatchProgress();
-  const emailAddress = normalizeEmailAddress(dom.reauthorizeEmailInput.value);
-  if (!isValidEmailAddress(emailAddress)) {
+  const parsedEmails = parseReauthorizeEmailInput(dom.reauthorizeEmailInput.value);
+  if (!parsedEmails.emailAddresses.length) {
     showConfigMessage("请输入有效的授权邮箱", true);
+    dom.reauthorizeEmailInput.focus();
+    return;
+  }
+  if (parsedEmails.invalidLines.length) {
+    showConfigMessage(`授权邮箱格式错误：${parsedEmails.invalidLines.join("，")}`, true);
     dom.reauthorizeEmailInput.focus();
     return;
   }
@@ -565,6 +570,24 @@ async function startManualReauthorize() {
     return;
   }
 
+  if (isXAiReauthorizeMode(getRegisterMode())) {
+    const records = parsedEmails.emailAddresses.map(buildManualReauthorizeRecord);
+    await runXAiReauthorizeBatch(records, {
+      type: "xai_reauthorize_manual",
+      source: "manual",
+      operationName: "xAI 自定义授权",
+      onSuccess: (record) => removeReauthorizeEmailFromInput(record.emailAddress)
+    });
+    return;
+  }
+
+  if (parsedEmails.emailAddresses.length > 1) {
+    showConfigMessage("当前授权模式暂不支持多个自定义邮箱", true);
+    dom.reauthorizeEmailInput.focus();
+    return;
+  }
+
+  const emailAddress = parsedEmails.emailAddresses[0];
   let initialState;
   try {
     initialState = await buildManualReauthorizeState(emailAddress);
@@ -1232,14 +1255,19 @@ async function startSelectedXAiReauthorize() {
   await runXAiReauthorizeBatch(records, {
     type: "xai_reauthorize_selected",
     source: "selected_history",
-    operationName: "xAI 选中授权"
+    operationName: "xAI 选中授权",
+    onSuccess: async (record) => {
+      selectedXAiHistoryKeys.delete(getHistoryRecordKey(record));
+      await renderHistoryTable();
+    }
   });
 }
 
 async function runXAiReauthorizeBatch(records, {
   type,
   source,
-  operationName
+  operationName,
+  onSuccess = null
 }) {
   await clearSnapshot();
   await clearLogs();
@@ -1317,6 +1345,16 @@ async function runXAiReauthorizeBatch(records, {
       }
       if (result?.success) {
         batchRunState.success += 1;
+        if (typeof onSuccess === "function") {
+          try {
+            await onSuccess(record, result);
+          } catch (error) {
+            logger.warn(`${operationName}成功后状态回写失败`, {
+              email: record.emailAddress || record.emailAccount?.emailAddress || "",
+              error: error.message
+            });
+          }
+        }
         updateBatchProgressFromRunState("running");
         logger.info(`${operationName}账号成功`, {
           round,
@@ -1493,6 +1531,17 @@ function buildManualHistoryRecord(emailAddress, emailAccount) {
   };
 }
 
+function buildManualReauthorizeRecord(emailAddress) {
+  const flowMode = getRegisterMode();
+  return {
+    accountType: getAccountTypeByMode(flowMode),
+    flowMode,
+    emailAddress,
+    emailMode: resolveManualEmailMode() === "temp" ? "temp" : "outlook_pool",
+    password: resolveConfiguredPasswordForCurrentAccountType()
+  };
+}
+
 function resolveReauthorizePassword(record = {}) {
   return String(record.password || resolveConfiguredPasswordForCurrentAccountType() || "").trim();
 }
@@ -1515,6 +1564,45 @@ function resolveManualEmailMode() {
 
 function normalizeEmailAddress(value) {
   return String(value || "").trim().toLowerCase();
+}
+
+function parseReauthorizeEmailInput(value) {
+  const rawLines = String(value || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const seen = new Set();
+  const emailAddresses = [];
+  const invalidLines = [];
+  for (const rawLine of rawLines) {
+    const emailAddress = normalizeEmailAddress(rawLine);
+    if (!isValidEmailAddress(emailAddress)) {
+      invalidLines.push(rawLine);
+      continue;
+    }
+    if (seen.has(emailAddress)) {
+      continue;
+    }
+    seen.add(emailAddress);
+    emailAddresses.push(emailAddress);
+  }
+  return {
+    emailAddresses,
+    invalidLines
+  };
+}
+
+function removeReauthorizeEmailFromInput(emailAddress) {
+  const targetEmail = normalizeEmailAddress(emailAddress);
+  if (!targetEmail) {
+    return;
+  }
+  const remainingLines = String(dom.reauthorizeEmailInput.value || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => normalizeEmailAddress(line) !== targetEmail);
+  dom.reauthorizeEmailInput.value = remainingLines.join("\n");
 }
 
 function isValidEmailAddress(value) {
