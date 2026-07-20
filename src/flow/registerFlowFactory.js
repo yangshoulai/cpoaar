@@ -170,6 +170,7 @@ function buildPhoneFirstRegisterFlow() {
         { status: PhoneFirstAddPhoneNumberNode.statuses.success, target: CreatePasswordNode.name }
       ],
       [CreatePasswordNode.name]: [
+        { status: CreatePasswordNode.statuses.retryStartup, target: StartupInitializeNode.name },
         { status: CreatePasswordNode.statuses.phoneVerificationReady, target: WaitSmsVerificationCodeNode.name },
         { status: CreatePasswordNode.statuses.aboutYouReady, target: FillAboutYouNode.name }
       ],
