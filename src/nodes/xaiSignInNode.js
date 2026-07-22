@@ -1,7 +1,7 @@
 import { RegisterNode, NodeResult } from "../core/flow.js";
-import { waitForAnyCondition } from "../core/browser.js";
+import { sleep, waitForAnyCondition } from "../core/browser.js";
 import { createLogger } from "../core/logger.js";
-import { XAI_SIGN_IN_URL } from "./xaiHelpers.js";
+import { clickVisibleButtonByText, findVisibleButtonByText, XAI_SIGN_IN_URL } from "./xaiHelpers.js";
 
 const logger = createLogger("node.xai-signin");
 const TURNSTILE_WAIT_TIMEOUT_MS = 120000;
@@ -9,6 +9,16 @@ const LOGIN_AFTER_CLICK_FAST_WAIT_MS = 10000;
 const LOGIN_AFTER_CLICK_FOLLOWUP_WAIT_MS = 35000;
 const LOGIN_SUBMIT_MAX_ATTEMPTS = 3;
 const PASSWORD_INPUT_SELECTOR = "input[name='password']";
+const EMAIL_SIGN_IN_BUTTON_KEYWORDS = [
+  "使用邮箱登录",
+  "使用电子邮件登录",
+  "sign in with email",
+  "log in with email",
+  "login with email",
+  "continue with email",
+  "use email"
+];
+const EMAIL_SIGN_IN_ENTRY_MAX_STEPS = 6;
 
 export class XAiSignInNode extends RegisterNode {
   static name = "xai_sign_in";
@@ -48,63 +58,38 @@ export class XAiSignInNode extends RegisterNode {
       await ctx.tabs.open(XAI_SIGN_IN_URL);
     }
 
-    const emailInputReady = await waitForAnyCondition([
-      {
-        name: "account_url",
-        check: () => getXAiAccountUrl(ctx)
-      },
-      {
-        name: "email_input",
-        check: () => ctx.tabs.findEmailInput()
-      }
-    ], {
-      timeoutMs: 30000,
-      label: "xAI 登录邮箱输入框",
-      signal: ctx.signal
-    });
-    if (emailInputReady.name === "account_url") {
-      logger.info("xAI 已处于登录状态", { email: emailAddress, currentUrl: emailInputReady.value });
+    const signInEntry = await waitForEmailSignInEntry(ctx, emailAddress, "xAI 登录邮箱输入框");
+    if (signInEntry.name === "account_url") {
+      logger.info("xAI 已处于登录状态", { email: emailAddress, currentUrl: signInEntry.value });
       return NodeResult.ok(XAiSignInNode.statuses.success, {
         account: ctx.state.account,
-        currentUrl: emailInputReady.value
+        currentUrl: signInEntry.value
       });
     }
-    if (!emailInputReady.matched) {
+    if (!signInEntry.matched) {
       return NodeResult.fail("xai_sign_in_email_input_missing", `未找到 xAI 登录邮箱输入框: ${await ctx.tabs.getCurrentUrl()}`);
     }
 
-    const fillEmailResult = await ctx.tabs.fillEmailInput(emailAddress);
-    if (!fillEmailResult.ok) {
-      return NodeResult.fail("xai_sign_in_email_input_missing", "xAI 登录邮箱输入失败");
-    }
-
-    const nextReady = await waitForSignInSubmitButton(ctx, "xAI 登录下一步按钮");
-    if (!nextReady.matched) {
-      return NodeResult.fail("xai_sign_in_next_submit_failed", "xAI 登录下一步按钮不可用");
-    }
-    const nextResult = await clickSignInSubmitButton(ctx);
-    if (!nextResult.ok) {
-      return NodeResult.fail("xai_sign_in_next_submit_failed", "xAI 登录下一步按钮点击失败");
-    }
-
-    const passwordStage = await waitForAnyCondition([
-      {
-        name: "account_url",
-        check: () => getXAiAccountUrl(ctx)
-      },
-      {
-        name: "password_input",
-        check: () => ctx.tabs.query(PASSWORD_INPUT_SELECTOR)
-      },
-      {
-        name: "turnstile",
-        check: () => detectTurnstile(ctx)
+    let passwordStage = signInEntry.name === "password_input" || signInEntry.name === "turnstile"
+      ? signInEntry
+      : null;
+    if (!passwordStage) {
+      const fillEmailResult = await ctx.tabs.fillEmailInput(emailAddress);
+      if (!fillEmailResult.ok) {
+        return NodeResult.fail("xai_sign_in_email_input_missing", "xAI 登录邮箱输入失败");
       }
-    ], {
-      timeoutMs: 30000,
-      label: "xAI 登录密码输入框",
-      signal: ctx.signal
-    });
+
+      const nextReady = await waitForSignInSubmitButton(ctx, "xAI 登录下一步按钮");
+      if (!nextReady.matched) {
+        return NodeResult.fail("xai_sign_in_next_submit_failed", "xAI 登录下一步按钮不可用");
+      }
+      const nextResult = await clickSignInSubmitButton(ctx);
+      if (!nextResult.ok) {
+        return NodeResult.fail("xai_sign_in_next_submit_failed", "xAI 登录下一步按钮点击失败");
+      }
+
+      passwordStage = await waitForPasswordSignInStage(ctx, emailAddress, "xAI 登录密码输入框");
+    }
     if (passwordStage.name === "account_url") {
       logger.info("xAI 登录已完成", { email: emailAddress, currentUrl: passwordStage.value });
       return NodeResult.ok(XAiSignInNode.statuses.success, {
@@ -123,17 +108,15 @@ export class XAiSignInNode extends RegisterNode {
           turnstile: turnstileBeforePassword
         });
       }
-      const passwordInputReady = await waitForAnyCondition([
-        {
-          name: "password_input",
-          check: () => ctx.tabs.query(PASSWORD_INPUT_SELECTOR)
-        }
-      ], {
-        timeoutMs: 30000,
-        label: "xAI 登录密码输入框",
-        signal: ctx.signal
-      });
-      if (!passwordInputReady.matched) {
+      const passwordInputReady = await waitForPasswordSignInStage(ctx, emailAddress, "xAI 登录 Turnstile 完成后的密码输入框");
+      if (passwordInputReady.name === "account_url") {
+        logger.info("xAI 登录 Turnstile 完成后已登录", { email: emailAddress, currentUrl: passwordInputReady.value });
+        return NodeResult.ok(XAiSignInNode.statuses.success, {
+          account: ctx.state.account,
+          currentUrl: passwordInputReady.value
+        });
+      }
+      if (!passwordInputReady.matched || passwordInputReady.name !== "password_input") {
         return NodeResult.fail("xai_sign_in_password_input_missing", `Turnstile 完成后仍未找到 xAI 登录密码输入框: ${await ctx.tabs.getCurrentUrl()}`);
       }
     }
@@ -386,6 +369,115 @@ function resolvePassword(ctx) {
   const historyRecord = ctx.state.historyRecord || {};
   const configuredPassword = ctx.config.accountProfiles?.xai?.specifiedPassword || "";
   return String(account.password || historyRecord.password || configuredPassword || "").trim();
+}
+
+async function waitForEmailSignInEntry(ctx, emailAddress, label) {
+  for (let step = 1; step <= EMAIL_SIGN_IN_ENTRY_MAX_STEPS; step += 1) {
+    const result = await waitForSignInEntryState(ctx, label, step === 1 ? 30000 : 8000);
+    if (["account_url", "password_input", "turnstile", "email_input"].includes(result.name)) {
+      return result;
+    }
+    if (result.name === "email_sign_in_button") {
+      const clicked = await clickEmailSignInButton(ctx);
+      logger.info("xAI 登录点击使用邮箱登录入口", {
+        email: emailAddress,
+        step,
+        currentUrl: await ctx.tabs.getCurrentUrl(),
+        button: clicked.button || result.value || null
+      });
+      await sleep(800, ctx.signal);
+      continue;
+    }
+    return result;
+  }
+  return {
+    matched: false,
+    name: "",
+    value: null
+  };
+}
+
+async function waitForPasswordSignInStage(ctx, emailAddress, label) {
+  for (let step = 1; step <= EMAIL_SIGN_IN_ENTRY_MAX_STEPS; step += 1) {
+    const result = await waitForSignInEntryState(ctx, label, step === 1 ? 30000 : 8000);
+    if (["account_url", "password_input", "turnstile"].includes(result.name)) {
+      return result;
+    }
+    if (result.name === "email_sign_in_button") {
+      const clicked = await clickEmailSignInButton(ctx);
+      logger.info("xAI 登录密码阶段继续点击使用邮箱登录入口", {
+        email: emailAddress,
+        step,
+        currentUrl: await ctx.tabs.getCurrentUrl(),
+        button: clicked.button || result.value || null
+      });
+      await sleep(800, ctx.signal);
+      continue;
+    }
+    if (result.name === "email_input") {
+      const fillEmailResult = await ctx.tabs.fillEmailInput(emailAddress);
+      if (!fillEmailResult.ok) {
+        return result;
+      }
+      const nextReady = await waitForSignInSubmitButton(ctx, "xAI 登录下一步按钮");
+      if (!nextReady.matched) {
+        return nextReady;
+      }
+      const nextResult = await clickSignInSubmitButton(ctx);
+      logger.info("xAI 登录密码阶段重新提交邮箱", {
+        email: emailAddress,
+        step,
+        currentUrl: await ctx.tabs.getCurrentUrl(),
+        button: nextResult.button || null
+      });
+      await sleep(800, ctx.signal);
+      continue;
+    }
+    return result;
+  }
+  return {
+    matched: false,
+    name: "",
+    value: null
+  };
+}
+
+async function waitForSignInEntryState(ctx, label, timeoutMs) {
+  return waitForAnyCondition([
+    {
+      name: "account_url",
+      check: () => getXAiAccountUrl(ctx)
+    },
+    {
+      name: "password_input",
+      check: () => ctx.tabs.query(PASSWORD_INPUT_SELECTOR)
+    },
+    {
+      name: "turnstile",
+      check: () => detectTurnstile(ctx)
+    },
+    {
+      name: "email_input",
+      check: () => ctx.tabs.findEmailInput()
+    },
+    {
+      name: "email_sign_in_button",
+      check: () => findEmailSignInButton(ctx)
+    }
+  ], {
+    timeoutMs,
+    intervalMs: 500,
+    label,
+    signal: ctx.signal
+  });
+}
+
+async function findEmailSignInButton(ctx) {
+  return findVisibleButtonByText(ctx, EMAIL_SIGN_IN_BUTTON_KEYWORDS);
+}
+
+async function clickEmailSignInButton(ctx) {
+  return clickVisibleButtonByText(ctx, EMAIL_SIGN_IN_BUTTON_KEYWORDS);
 }
 
 async function waitForSignInSubmitButton(ctx, label) {

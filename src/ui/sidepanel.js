@@ -1565,7 +1565,11 @@ function resolveManualEmailMode() {
 }
 
 function normalizeEmailAddress(value) {
-  return String(value || "").trim().toLowerCase();
+  return String(value || "").trim();
+}
+
+function normalizeEmailKey(value) {
+  return normalizeEmailAddress(value).toLowerCase();
 }
 
 function parseReauthorizeEmailInput(value) {
@@ -1582,10 +1586,11 @@ function parseReauthorizeEmailInput(value) {
       invalidLines.push(rawLine);
       continue;
     }
-    if (seen.has(emailAddress)) {
+    const emailKey = normalizeEmailKey(emailAddress);
+    if (seen.has(emailKey)) {
       continue;
     }
-    seen.add(emailAddress);
+    seen.add(emailKey);
     emailAddresses.push(emailAddress);
   }
   return {
@@ -1595,7 +1600,7 @@ function parseReauthorizeEmailInput(value) {
 }
 
 function removeReauthorizeEmailFromInput(emailAddress) {
-  const targetEmail = normalizeEmailAddress(emailAddress);
+  const targetEmail = normalizeEmailKey(emailAddress);
   if (!targetEmail) {
     return;
   }
@@ -1603,7 +1608,7 @@ function removeReauthorizeEmailFromInput(emailAddress) {
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean)
-    .filter((line) => normalizeEmailAddress(line) !== targetEmail);
+    .filter((line) => normalizeEmailKey(line) !== targetEmail);
   dom.reauthorizeEmailInput.value = remainingLines.join("\n");
 }
 
