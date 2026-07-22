@@ -169,10 +169,31 @@ export class XAiSignInNode extends RegisterNode {
 
 async function submitLoginAndWaitForAccount(ctx, password) {
   for (let attempt = 1; attempt <= LOGIN_SUBMIT_MAX_ATTEMPTS; attempt += 1) {
+    const existingAccountUrl = await getXAiAccountUrl(ctx);
+    if (existingAccountUrl) {
+      return {
+        ok: true,
+        currentUrl: existingAccountUrl
+      };
+    }
+
     await ensurePasswordInputValue(ctx, password);
 
-    const loginReady = await waitForSignInSubmitButton(ctx, "xAI 登录按钮");
+    const loginReady = await waitForLoginSubmitButtonOrAccount(ctx);
+    if (loginReady.name === "account_url") {
+      return {
+        ok: true,
+        currentUrl: loginReady.value
+      };
+    }
     if (!loginReady.matched) {
+      const accountUrl = await getXAiAccountUrl(ctx);
+      if (accountUrl) {
+        return {
+          ok: true,
+          currentUrl: accountUrl
+        };
+      }
       return {
         ok: false,
         status: "xai_sign_in_login_submit_failed",
@@ -181,6 +202,13 @@ async function submitLoginAndWaitForAccount(ctx, password) {
     }
     const loginResult = await clickSignInSubmitButton(ctx);
     if (!loginResult.ok) {
+      const accountUrl = await getXAiAccountUrl(ctx);
+      if (accountUrl) {
+        return {
+          ok: true,
+          currentUrl: accountUrl
+        };
+      }
       return {
         ok: false,
         status: "xai_sign_in_login_submit_failed",
@@ -206,6 +234,12 @@ async function submitLoginAndWaitForAccount(ctx, password) {
       if (!turnstileResult.ok) {
         return turnstileResult;
       }
+      if (turnstileResult.currentUrl) {
+        return {
+          ok: true,
+          currentUrl: turnstileResult.currentUrl
+        };
+      }
       continue;
     }
 
@@ -220,6 +254,12 @@ async function submitLoginAndWaitForAccount(ctx, password) {
       const turnstileResult = await handlePostLoginTurnstile(ctx, attempt);
       if (!turnstileResult.ok) {
         return turnstileResult;
+      }
+      if (turnstileResult.currentUrl) {
+        return {
+          ok: true,
+          currentUrl: turnstileResult.currentUrl
+        };
       }
       continue;
     }
@@ -258,6 +298,24 @@ async function waitForAccountUrlAfterClick(ctx, timeoutMs) {
   });
 }
 
+async function waitForLoginSubmitButtonOrAccount(ctx) {
+  return waitForAnyCondition([
+    {
+      name: "account_url",
+      check: () => getXAiAccountUrl(ctx)
+    },
+    {
+      name: "submit_button",
+      check: () => findSignInSubmitButton(ctx)
+    }
+  ], {
+    timeoutMs: 15000,
+    intervalMs: 300,
+    label: "xAI 登录按钮或已登录页面",
+    signal: ctx.signal
+  });
+}
+
 async function handlePostLoginTurnstile(ctx, attempt) {
   const detection = await detectTurnstile(ctx);
   logger.info("xAI 登录提交后检测到 Cloudflare Turnstile", {
@@ -276,11 +334,22 @@ async function handlePostLoginTurnstile(ctx, attempt) {
       }
     };
   }
-  logger.info("xAI 登录 Turnstile 已完成，准备重新点击登录", {
+  logger.info("xAI 登录 Turnstile 已完成，确认跳转或准备重新点击登录", {
     attempt,
     matched: turnstileResult.matched || "",
     value: turnstileResult.value || null
   });
+  const accountReady = await waitForAccountUrlAfterClick(ctx, 8000);
+  if (accountReady.name === "account_url") {
+    logger.info("xAI 登录 Turnstile 完成后已进入账号页", {
+      attempt,
+      currentUrl: accountReady.value
+    });
+    return {
+      ok: true,
+      currentUrl: accountReady.value
+    };
+  }
   return {
     ok: true
   };
