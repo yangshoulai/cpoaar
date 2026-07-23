@@ -62,6 +62,7 @@ export class HttpClient {
         headers,
         body,
         credentials: options.credentials ?? "omit",
+        cache: options.cache,
         signal: controller.signal
       });
       const text = await response.text();

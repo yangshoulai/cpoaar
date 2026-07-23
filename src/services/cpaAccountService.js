@@ -144,6 +144,7 @@ export class CpaAccountService {
           query: { name: fileName },
           headers: this._bearerHeaders(),
           credentials: "omit",
+          cache: "no-store",
           responseType: "text"
         });
         const authFile = parseRequiredJson(text, `CPA xAI 认证文件 ${fileName}`);
