@@ -58,6 +58,14 @@ export class XAiSubmitConsentNode extends RegisterNode {
       return NodeResult.fail("stopped", "流程已停止");
     }
 
+    const deleteResult = await deleteExistingXAiAuthFile(ctx);
+    if (!deleteResult.ok) {
+      return NodeResult.fail("xai_auth_file_delete_failed", deleteResult.error, {
+        xaiOauthUrl: ctx.state.xaiOauthUrl || null,
+        xaiAuthFileDeleteResult: deleteResult.data
+      });
+    }
+
     const clickResult = await approveDeviceConsent(ctx);
     if (!clickResult.ok) {
       return NodeResult.fail("xai_oauth_allow_failed", "未能点击 xAI device OAuth 允许按钮");
@@ -120,6 +128,7 @@ export class XAiSubmitConsentNode extends RegisterNode {
       xaiOauthFlow: "device",
       xaiOauthDeviceUserCode: resolveDeviceUserCode(ctx.state.xaiOauthUrl),
       xaiOauthAllowSubmittedAt: allowSubmittedAt,
+      xaiAuthFileDeleteResult: deleteResult.data,
       accountExportSubmitResult: submitResult
     });
   }
@@ -187,6 +196,14 @@ export class XAiSubmitConsentNode extends RegisterNode {
       });
     }
     const redirectUrl = buildXAiRedirectUrl(authorizationCode, oauthState);
+    const deleteResult = await deleteExistingXAiAuthFile(ctx);
+    if (!deleteResult.ok) {
+      return NodeResult.fail("xai_auth_file_delete_failed", deleteResult.error, {
+        xaiOauthRedirectUrl: redirectUrl,
+        xaiAuthorizationCode: authorizationCode,
+        xaiAuthFileDeleteResult: deleteResult.data
+      });
+    }
     const submitResult = await ctx.services.accountManagementService.submitRedirectUrl(redirectUrl, {
       accountType: ACCOUNT_TYPES.xai,
       emailAddress: ctx.state.account?.emailAddress || "",
@@ -220,8 +237,67 @@ export class XAiSubmitConsentNode extends RegisterNode {
       xaiOauthState: oauthState,
       xaiOauthRedirectUrl: redirectUrl,
       xaiOauthAllowSubmittedAt: allowSubmittedAt,
+      xaiAuthFileDeleteResult: deleteResult.data,
       accountExportSubmitResult: submitResult
     });
+  }
+}
+
+async function deleteExistingXAiAuthFile(ctx) {
+  const emailAddress = String(ctx.state.account?.emailAddress || "").trim();
+  if (!emailAddress) {
+    return {
+      ok: false,
+      error: "删除 CPA xAI 认证文件失败：缺少 xAI 邮箱地址",
+      data: null
+    };
+  }
+
+  try {
+    const result = await ctx.services.accountManagementService.deleteAccount({
+      accountType: ACCOUNT_TYPES.xai,
+      emailAddress
+    });
+    if (!result?.success) {
+      return {
+        ok: false,
+        error: result?.error || `删除 CPA xAI 认证文件失败: ${result?.status || "unknown"}`,
+        data: result || null
+      };
+    }
+    logger.info("已删除已有 CPA xAI 认证文件，等待本次授权写入新文件", {
+      email: emailAddress,
+      fileName: result.fileName || "",
+      status: result.status || "ok"
+    });
+    return {
+      ok: true,
+      data: {
+        deleted: true,
+        fileName: result.fileName || "",
+        status: result.status || "ok"
+      }
+    };
+  } catch (error) {
+    if (Number(error?.status) === 404) {
+      logger.info("CPA xAI 认证文件不存在，继续本次授权写入流程", { email: emailAddress });
+      return {
+        ok: true,
+        data: {
+          deleted: false,
+          missing: true,
+          status: "not_found"
+        }
+      };
+    }
+    return {
+      ok: false,
+      error: `删除 CPA xAI 认证文件失败：${formatServiceError(error)}`,
+      data: {
+        status: error?.status || 0,
+        error: formatServiceError(error)
+      }
+    };
   }
 }
 
