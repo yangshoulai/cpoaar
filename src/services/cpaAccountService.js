@@ -245,7 +245,7 @@ export class CpaAccountService {
 }
 
 function buildCodexAuthFileName(emailAddress) {
-  return `codex-${String(emailAddress || "").trim()}-free.json`;
+  return `codex-${String(emailAddress || "").trim()}.json`;
 }
 
 function buildXAiAuthFileName(emailAddress) {
