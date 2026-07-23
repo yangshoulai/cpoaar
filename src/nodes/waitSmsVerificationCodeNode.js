@@ -11,6 +11,7 @@ export class WaitSmsVerificationCodeNode extends RegisterNode {
   static name = "wait_sms_verification_code";
   static statuses = {
     success: "phone_verified",
+    freshOauthConsent: "openai_fresh_oauth_consent_ready",
     aboutYouReady: "phone_verified_about_you_ready",
     retrySelectCodexAccount: "sms_verification_retry_select_codex_account",
     retryStartup: "sms_verification_retry_startup"
@@ -136,7 +137,7 @@ export class WaitSmsVerificationCodeNode extends RegisterNode {
       }
       if (submitResult.name === "consent_ready") {
         await ctx.services.smsService.callback(mobileNumber, true);
-        return NodeResult.ok(WaitSmsVerificationCodeNode.statuses.success, {
+        return NodeResult.ok(resolveSuccessStatus(ctx), {
           smsVerificationCode: code,
           currentUrl
         });
@@ -188,6 +189,12 @@ export class WaitSmsVerificationCodeNode extends RegisterNode {
       });
     }
   }
+}
+
+function resolveSuccessStatus(ctx) {
+  return ctx.state.openAiFreshOauthReauthorizationAt
+    ? WaitSmsVerificationCodeNode.statuses.freshOauthConsent
+    : WaitSmsVerificationCodeNode.statuses.success;
 }
 
 async function waitForSmsCodeOrPageFailure(ctx, mobileNumber) {

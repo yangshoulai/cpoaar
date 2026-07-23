@@ -15,6 +15,7 @@ import { SubmitCodexConsentNode } from "../nodes/submitCodexConsentNode.js";
 import { ReauthorizePhoneChallengeNode } from "../nodes/reauthorizePhoneChallengeNode.js";
 import { ReauthorizeAccountDeletedNode } from "../nodes/reauthorizeAccountDeletedNode.js";
 import { ReauthorizeDeleteAccountNode } from "../nodes/reauthorizeDeleteAccountNode.js";
+import { ResetOpenAiSessionForOAuthNode } from "../nodes/resetOpenAiSessionForOAuthNode.js";
 import { XAiOpenSignupPageNode } from "../nodes/xaiOpenSignupPageNode.js";
 import { XAiWaitEmailVerificationCodeNode } from "../nodes/xaiWaitEmailVerificationCodeNode.js";
 import { XAiFillProfileNode } from "../nodes/xaiFillProfileNode.js";
@@ -50,6 +51,7 @@ function buildEmailRegisterFlow() {
     new CreatePasswordNode(),
     new WaitEmailVerificationCodeNode(),
     new FillAboutYouNode(),
+    new ResetOpenAiSessionForOAuthNode(),
     new SelectCodexAccountNode(),
     new AddPhoneNumberNode(),
     new WaitSmsVerificationCodeNode(),
@@ -77,18 +79,23 @@ function buildEmailRegisterFlow() {
       [WaitEmailVerificationCodeNode.name]: [
         { status: WaitEmailVerificationCodeNode.statuses.retryCurrent, target: WaitEmailVerificationCodeNode.name },
         { status: WaitEmailVerificationCodeNode.statuses.success, target: FillAboutYouNode.name },
-        { status: WaitEmailVerificationCodeNode.statuses.chatgptReady, target: SelectCodexAccountNode.name },
+        { status: WaitEmailVerificationCodeNode.statuses.chatgptReady, target: ResetOpenAiSessionForOAuthNode.name },
         { status: WaitEmailVerificationCodeNode.statuses.needsPhone, target: AddPhoneNumberNode.name },
-        { status: WaitEmailVerificationCodeNode.statuses.consent, target: SubmitCodexConsentNode.name }
+        { status: WaitEmailVerificationCodeNode.statuses.consent, target: ResetOpenAiSessionForOAuthNode.name },
+        { status: WaitEmailVerificationCodeNode.statuses.freshOauthConsent, target: SubmitCodexConsentNode.name }
       ],
       [FillAboutYouNode.name]: [
-        { status: FillAboutYouNode.statuses.success, target: SelectCodexAccountNode.name },
+        { status: FillAboutYouNode.statuses.success, target: ResetOpenAiSessionForOAuthNode.name },
         { status: FillAboutYouNode.statuses.retryFillEmail, target: FillEmailAndSubmitNode.name }
+      ],
+      [ResetOpenAiSessionForOAuthNode.name]: [
+        { status: ResetOpenAiSessionForOAuthNode.statuses.success, target: SelectCodexAccountNode.name }
       ],
       [SelectCodexAccountNode.name]: [
         { status: SelectCodexAccountNode.statuses.emailVerificationReady, target: WaitEmailVerificationCodeNode.name },
         { status: SelectCodexAccountNode.statuses.needsPhone, target: AddPhoneNumberNode.name },
-        { status: SelectCodexAccountNode.statuses.consent, target: SubmitCodexConsentNode.name }
+        { status: SelectCodexAccountNode.statuses.consent, target: ResetOpenAiSessionForOAuthNode.name },
+        { status: SelectCodexAccountNode.statuses.freshOauthConsent, target: SubmitCodexConsentNode.name }
       ],
       [AddPhoneNumberNode.name]: [
         { status: AddPhoneNumberNode.statuses.oauthReauthRequired, target: SelectCodexAccountNode.name },
@@ -96,7 +103,8 @@ function buildEmailRegisterFlow() {
       ],
       [WaitSmsVerificationCodeNode.name]: [
         { status: WaitSmsVerificationCodeNode.statuses.retrySelectCodexAccount, target: SelectCodexAccountNode.name },
-        { status: WaitSmsVerificationCodeNode.statuses.success, target: SubmitCodexConsentNode.name }
+        { status: WaitSmsVerificationCodeNode.statuses.success, target: ResetOpenAiSessionForOAuthNode.name },
+        { status: WaitSmsVerificationCodeNode.statuses.freshOauthConsent, target: SubmitCodexConsentNode.name }
       ]
     }
   });
@@ -151,6 +159,7 @@ function buildPhoneFirstRegisterFlow() {
     new CreatePasswordNode(),
     new WaitSmsVerificationCodeNode(),
     new FillAboutYouNode(),
+    new ResetOpenAiSessionForOAuthNode(),
     new SelectCodexAccountNode(),
     new PhoneFirstAddEmailNode(),
     new WaitEmailVerificationCodeNode(),
@@ -177,7 +186,8 @@ function buildPhoneFirstRegisterFlow() {
       [WaitSmsVerificationCodeNode.name]: [
         { status: WaitSmsVerificationCodeNode.statuses.retryStartup, target: StartupInitializeNode.name },
         { status: WaitSmsVerificationCodeNode.statuses.retrySelectCodexAccount, target: StartupInitializeNode.name },
-        { status: WaitSmsVerificationCodeNode.statuses.success, target: SubmitCodexConsentNode.name },
+        { status: WaitSmsVerificationCodeNode.statuses.success, target: ResetOpenAiSessionForOAuthNode.name },
+        { status: WaitSmsVerificationCodeNode.statuses.freshOauthConsent, target: SubmitCodexConsentNode.name },
         { status: WaitSmsVerificationCodeNode.statuses.aboutYouReady, target: FillAboutYouNode.name }
       ],
       [FillAboutYouNode.name]: [
@@ -186,14 +196,19 @@ function buildPhoneFirstRegisterFlow() {
       [SelectCodexAccountNode.name]: [
         { status: SelectCodexAccountNode.statuses.addEmailReady, target: PhoneFirstAddEmailNode.name },
         { status: SelectCodexAccountNode.statuses.emailVerificationReady, target: WaitEmailVerificationCodeNode.name },
-        { status: SelectCodexAccountNode.statuses.consent, target: SubmitCodexConsentNode.name }
+        { status: SelectCodexAccountNode.statuses.consent, target: ResetOpenAiSessionForOAuthNode.name },
+        { status: SelectCodexAccountNode.statuses.freshOauthConsent, target: SubmitCodexConsentNode.name }
+      ],
+      [ResetOpenAiSessionForOAuthNode.name]: [
+        { status: ResetOpenAiSessionForOAuthNode.statuses.success, target: SelectCodexAccountNode.name }
       ],
       [PhoneFirstAddEmailNode.name]: [
         { status: PhoneFirstAddEmailNode.statuses.success, target: WaitEmailVerificationCodeNode.name }
       ],
       [WaitEmailVerificationCodeNode.name]: [
         { status: WaitEmailVerificationCodeNode.statuses.retryCurrent, target: WaitEmailVerificationCodeNode.name },
-        { status: WaitEmailVerificationCodeNode.statuses.consent, target: SubmitCodexConsentNode.name }
+        { status: WaitEmailVerificationCodeNode.statuses.consent, target: ResetOpenAiSessionForOAuthNode.name },
+        { status: WaitEmailVerificationCodeNode.statuses.freshOauthConsent, target: SubmitCodexConsentNode.name }
       ]
     }
   });
@@ -314,6 +329,7 @@ export const EMAIL_REGISTER_NODE_ORDER = [
   CreatePasswordNode.name,
   WaitEmailVerificationCodeNode.name,
   FillAboutYouNode.name,
+  ResetOpenAiSessionForOAuthNode.name,
   SelectCodexAccountNode.name,
   AddPhoneNumberNode.name,
   WaitSmsVerificationCodeNode.name,
@@ -327,6 +343,7 @@ export const PHONE_FIRST_REGISTER_NODE_ORDER = [
   CreatePasswordNode.name,
   WaitSmsVerificationCodeNode.name,
   FillAboutYouNode.name,
+  ResetOpenAiSessionForOAuthNode.name,
   SelectCodexAccountNode.name,
   PhoneFirstAddEmailNode.name,
   WaitEmailVerificationCodeNode.name,
@@ -378,10 +395,11 @@ const EMAIL_REGISTER_MANUAL_RETRY_POLICIES = Object.freeze({
   [CreatePasswordNode.name]: RETRY_REFRESH,
   [WaitEmailVerificationCodeNode.name]: RETRY_REFRESH,
   [FillAboutYouNode.name]: RETRY_REFRESH,
+  [ResetOpenAiSessionForOAuthNode.name]: RETRY_DIRECT,
   [SelectCodexAccountNode.name]: RETRY_DIRECT,
   [AddPhoneNumberNode.name]: RETRY_DIRECT,
   [WaitSmsVerificationCodeNode.name]: retryFromNode(SelectCodexAccountNode.name),
-  [SubmitCodexConsentNode.name]: retryFromNode(SelectCodexAccountNode.name)
+  [SubmitCodexConsentNode.name]: retryFromNode(ResetOpenAiSessionForOAuthNode.name)
 });
 
 const PHONE_FIRST_REGISTER_MANUAL_RETRY_POLICIES = Object.freeze({
@@ -391,10 +409,11 @@ const PHONE_FIRST_REGISTER_MANUAL_RETRY_POLICIES = Object.freeze({
   [CreatePasswordNode.name]: RETRY_REFRESH,
   [WaitSmsVerificationCodeNode.name]: retryFromNode(StartupInitializeNode.name),
   [FillAboutYouNode.name]: RETRY_REFRESH,
+  [ResetOpenAiSessionForOAuthNode.name]: RETRY_DIRECT,
   [SelectCodexAccountNode.name]: RETRY_DIRECT,
   [PhoneFirstAddEmailNode.name]: RETRY_REFRESH,
   [WaitEmailVerificationCodeNode.name]: RETRY_REFRESH,
-  [SubmitCodexConsentNode.name]: retryFromNode(SelectCodexAccountNode.name)
+  [SubmitCodexConsentNode.name]: retryFromNode(ResetOpenAiSessionForOAuthNode.name)
 });
 
 const REAUTHORIZE_MANUAL_RETRY_POLICIES = Object.freeze({

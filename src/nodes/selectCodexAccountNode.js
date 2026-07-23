@@ -19,6 +19,7 @@ export class SelectCodexAccountNode extends RegisterNode {
     addEmailReady: "codex_oauth_add_email_ready",
     needsPhone: "codex_oauth_needs_phone",
     consent: "codex_oauth_consent_ready",
+    freshOauthConsent: "openai_fresh_oauth_consent_ready",
     accountDeleted: "reauthorize_account_deactivated_ready"
   };
 
@@ -89,7 +90,7 @@ export class SelectCodexAccountNode extends RegisterNode {
       return buildAccountDeactivatedResult(ctx, { currentUrl: await ctx.tabs.getCurrentUrl() });
     }
     if (accountResult.name === "consent") {
-      return NodeResult.ok(SelectCodexAccountNode.statuses.consent, { currentUrl: await ctx.tabs.getCurrentUrl() });
+      return buildConsentReadyResult(ctx, { currentUrl: await ctx.tabs.getCurrentUrl() });
     }
     if (accountResult.name === "add_email") {
       return NodeResult.ok(SelectCodexAccountNode.statuses.addEmailReady, { currentUrl: await ctx.tabs.getCurrentUrl() });
@@ -169,12 +170,10 @@ export class SelectCodexAccountNode extends RegisterNode {
     if (nextResult.name === "account_deactivated") {
       return buildAccountDeactivatedResult(ctx, { currentUrl });
     }
-    return NodeResult.ok(
-      nextResult.name === "needs_phone"
-        ? SelectCodexAccountNode.statuses.needsPhone
-        : SelectCodexAccountNode.statuses.consent,
-      { currentUrl }
-    );
+    if (nextResult.name === "needs_phone") {
+      return NodeResult.ok(SelectCodexAccountNode.statuses.needsPhone, { currentUrl });
+    }
+    return buildConsentReadyResult(ctx, { currentUrl });
   }
 }
 
@@ -294,4 +293,13 @@ function buildAccountDeactivatedResult(ctx, data = {}) {
     return NodeResult.ok(SelectCodexAccountNode.statuses.accountDeleted, data);
   }
   return NodeResult.fail("codex_oauth_account_deactivated", "账号已停用: account_deactivated", data);
+}
+
+function buildConsentReadyResult(ctx, data = {}) {
+  return NodeResult.ok(
+    ctx.state.openAiFreshOauthReauthorizationAt
+      ? SelectCodexAccountNode.statuses.freshOauthConsent
+      : SelectCodexAccountNode.statuses.consent,
+    data
+  );
 }

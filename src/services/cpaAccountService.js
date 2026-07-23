@@ -200,30 +200,58 @@ export class CpaAccountService {
       throw new Error("CPA 账号删除失败：缺少邮箱地址");
     }
     const accountType = normalizeAccountType(record?.accountType || this.accountType);
-    const fileName = accountType === ACCOUNT_TYPES.xai
-      ? buildXAiAuthFileName(emailAddress)
-      : buildCodexAuthFileName(emailAddress);
+    const fileNames = accountType === ACCOUNT_TYPES.xai
+      ? [buildXAiAuthFileName(emailAddress)]
+      : buildCodexAuthFileNames(emailAddress);
     const url = joinUrl(this.config.baseUrl, "auth-files");
     logger.info(accountType === ACCOUNT_TYPES.xai ? "删除 CPA xAI 认证文件" : "删除 CPA Codex 认证文件", {
       url,
       email: emailAddress,
-      fileName
+      fileNames
     });
-    const payload = await this.http.request(url, {
-      method: "DELETE",
-      query: { name: fileName },
-      headers: this._headers(),
-      credentials: "omit"
-    });
-    const success = payload == null
-      || payload?.success === true
-      || payload?.status === "ok";
+    const results = [];
+    for (const fileName of fileNames) {
+      try {
+        const payload = await this.http.request(url, {
+          method: "DELETE",
+          query: { name: fileName },
+          headers: this._headers(),
+          credentials: "omit"
+        });
+        const success = payload == null
+          || payload?.success === true
+          || payload?.status === "ok";
+        if (!success) {
+          const error = payload?.error || payload?.message || "删除响应异常";
+          results.push({ fileName, status: "failed", error, attributes: payload || {} });
+          logger.warn("CPA 认证文件删除失败，继续尝试其它文件名", { email: emailAddress, fileName, error });
+          continue;
+        }
+        results.push({ fileName, status: "deleted", error: "", attributes: payload || {} });
+      } catch (error) {
+        if (isHttpStatus(error, 404)) {
+          results.push({ fileName, status: "missing", error: "", attributes: {} });
+          logger.info("CPA 认证文件不存在，继续尝试其它文件名", { email: emailAddress, fileName });
+          continue;
+        }
+        const message = formatServiceError(error);
+        results.push({ fileName, status: "failed", error: message, attributes: {} });
+        logger.warn("CPA 认证文件删除失败，继续尝试其它文件名", { email: emailAddress, fileName, error: message });
+      }
+    }
+    const failedFiles = results.filter((result) => result.status === "failed");
+    const deletedFiles = results.filter((result) => result.status === "deleted");
+    const missingFiles = results.filter((result) => result.status === "missing");
     return {
-      success,
-      status: payload?.status || (success ? "ok" : "unknown"),
-      error: payload?.error || payload?.message || "",
-      fileName,
-      attributes: payload || {}
+      success: failedFiles.length === 0 || deletedFiles.length > 0,
+      status: failedFiles.length ? "partial_failed" : "ok",
+      error: failedFiles.map((result) => `${result.fileName}: ${result.error}`).join("；"),
+      fileName: fileNames[0],
+      fileNames,
+      deletedFiles: deletedFiles.map((result) => result.fileName),
+      missingFiles: missingFiles.map((result) => result.fileName),
+      failedFiles: failedFiles.map((result) => result.fileName),
+      attributes: { results }
     };
   }
 
@@ -244,8 +272,16 @@ export class CpaAccountService {
   }
 }
 
-function buildCodexAuthFileName(emailAddress) {
-  return `codex-${String(emailAddress || "").trim()}.json`;
+export function buildCodexAuthFileNames(emailAddress) {
+  const normalizedEmailAddress = String(emailAddress || "").trim();
+  if (!normalizedEmailAddress) {
+    throw new Error("缺少 OpenAI 邮箱地址，无法定位 CPA 认证文件");
+  }
+  return [
+    `codex-${normalizedEmailAddress}-free.json`,
+    `codex-${normalizedEmailAddress}.json`,
+    `${normalizedEmailAddress}.json`
+  ];
 }
 
 function buildXAiAuthFileName(emailAddress) {

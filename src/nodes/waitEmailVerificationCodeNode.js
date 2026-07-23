@@ -21,6 +21,7 @@ export class WaitEmailVerificationCodeNode extends RegisterNode {
     chatgptReady: "email_verified_chatgpt_ready",
     needsPhone: "codex_oauth_needs_phone",
     consent: "codex_oauth_consent_ready",
+    freshOauthConsent: "openai_fresh_oauth_consent_ready",
     accountDeleted: "reauthorize_account_deactivated_ready"
   };
 
@@ -96,7 +97,7 @@ export class WaitEmailVerificationCodeNode extends RegisterNode {
       return NodeResult.ok(WaitEmailVerificationCodeNode.statuses.needsPhone);
     }
     if (readyResult.name === "consent") {
-      return NodeResult.ok(WaitEmailVerificationCodeNode.statuses.consent);
+      return buildConsentReadyResult(ctx);
     }
 
     const timeoutMs = Number(ctx.config.register.verificationCodeWaitTimeout || 60) * 1000;
@@ -205,7 +206,7 @@ export class WaitEmailVerificationCodeNode extends RegisterNode {
         return NodeResult.ok(WaitEmailVerificationCodeNode.statuses.needsPhone, data);
       }
       if (submitResult.name === "consent") {
-        return NodeResult.ok(WaitEmailVerificationCodeNode.statuses.consent, data);
+        return buildConsentReadyResult(ctx, data);
       }
       return NodeResult.ok(WaitEmailVerificationCodeNode.statuses.success, data);
     }
@@ -242,6 +243,15 @@ function buildAccountDeactivatedResult(ctx, data = {}) {
     return NodeResult.ok(WaitEmailVerificationCodeNode.statuses.accountDeleted, data);
   }
   return NodeResult.fail("account_create_failed", "账号已停用: account_deactivated", data);
+}
+
+function buildConsentReadyResult(ctx, data = {}) {
+  return NodeResult.ok(
+    ctx.state.openAiFreshOauthReauthorizationAt
+      ? WaitEmailVerificationCodeNode.statuses.freshOauthConsent
+      : WaitEmailVerificationCodeNode.statuses.consent,
+    data
+  );
 }
 
 async function queryTextContains(ctx, selector, pageTextName) {
