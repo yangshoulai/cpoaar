@@ -4,7 +4,6 @@ import { createLogger } from "../core/logger.js";
 import { ACCOUNT_TYPES } from "../core/runModes.js";
 import { getPageTextTerms } from "../core/pageText.js";
 import {
-  clickVisibleButtonByText,
   findVisibleConsentAllowButton
 } from "./xaiHelpers.js";
 
@@ -103,7 +102,7 @@ export class XAiRefreshOAuthAndLoginNode extends RegisterNode {
 
     const isDeviceFlow = isXAiDeviceOauthUrl(oauth.url) || readyResult.name.startsWith("device_");
     if (readyResult.name === "device_login") {
-      const continueResult = await clickVisibleButtonByText(ctx, getPageTextTerms("continueAction"));
+      const continueResult = await clickDeviceLoginSubmit(ctx);
       if (!continueResult.ok) {
         return NodeResult.fail("xai_oauth_device_continue_failed", "未能点击 xAI device 登录继续按钮", {
           currentUrl: await ctx.tabs.getCurrentUrl(),
@@ -168,18 +167,35 @@ async function findDeviceLoginPage(ctx) {
         const normalized = text.toLowerCase();
         return titleTerms.some((term) => normalized === term);
       });
-    if (!title) {
+    const submitControl = findSubmitControl();
+    const hasDeviceForm = Boolean(document.querySelector("form input[name='user_code'], form input[name='userCode']"));
+    if (!title && !hasDeviceForm) {
       return null;
     }
-    const button = Array.from(document.querySelectorAll("button"))
+    const continueButton = Array.from(document.querySelectorAll("button, input[type='button'], input[type='submit']"))
       .find((item) => {
-        const text = String(item.textContent || "").trim().toLowerCase();
+        const text = getControlText(item).toLowerCase();
         return isClickable(item) && continueTerms.some((term) => text.includes(term));
       });
-    return button ? {
+    const control = submitControl || continueButton;
+    return control ? {
       title,
-      buttonText: String(button.textContent || "").trim()
+      controlText: getControlText(control),
+      controlType: control.getAttribute("type") || "",
+      matchedBy: submitControl ? "submit_type" : "continue_text"
     } : null;
+
+    function findSubmitControl() {
+      return Array.from(document.querySelectorAll("button[type='submit'], input[type='submit']"))
+        .find((item) => isClickable(item)) || null;
+    }
+
+    function getControlText(element) {
+      if (element instanceof HTMLInputElement) {
+        return String(element.value || element.getAttribute("aria-label") || "").trim();
+      }
+      return String(element.textContent || element.getAttribute("aria-label") || "").trim();
+    }
 
     function isClickable(element) {
       const style = window.getComputedStyle(element);
@@ -193,6 +209,49 @@ async function findDeviceLoginPage(ctx) {
     getPageTextTerms("xaiDeviceLoginTitle").map((term) => term.toLowerCase()),
     getPageTextTerms("continueAction").map((term) => term.toLowerCase())
   ]);
+}
+
+async function clickDeviceLoginSubmit(ctx) {
+  return ctx.tabs.execute((continueTerms) => {
+    const submitControl = Array.from(document.querySelectorAll("button[type='submit'], input[type='submit']"))
+      .find((item) => isClickable(item)) || null;
+    const continueButton = submitControl
+      ? null
+      : Array.from(document.querySelectorAll("button, input[type='button'], input[type='submit']"))
+        .find((item) => isClickable(item) && continueTerms.some((term) => getControlText(item).toLowerCase().includes(term)));
+    const control = submitControl || continueButton;
+    if (!control) {
+      return { ok: false, control: null };
+    }
+    control.scrollIntoView({ block: "center", inline: "center" });
+    control.click();
+    return {
+      ok: true,
+      matchedBy: submitControl ? "submit_type" : "continue_text",
+      control: {
+        text: getControlText(control),
+        type: control.getAttribute("type") || "",
+        name: control.getAttribute("name") || "",
+        value: control.getAttribute("value") || ""
+      }
+    };
+
+    function getControlText(element) {
+      if (element instanceof HTMLInputElement) {
+        return String(element.value || element.getAttribute("aria-label") || "").trim();
+      }
+      return String(element.textContent || element.getAttribute("aria-label") || "").trim();
+    }
+
+    function isClickable(element) {
+      const style = window.getComputedStyle(element);
+      return style.visibility !== "hidden"
+        && style.display !== "none"
+        && element.getClientRects().length > 0
+        && !element.disabled
+        && element.getAttribute("aria-disabled") !== "true";
+    }
+  }, [getPageTextTerms("continueAction").map((term) => term.toLowerCase())]);
 }
 
 function isXAiDeviceOauthUrl(value) {

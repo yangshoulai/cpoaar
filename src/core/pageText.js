@@ -114,7 +114,9 @@ const PAGE_TEXT = Object.freeze({
   ],
   xaiDeviceLoginTitle: [
     "登录 Grok Build",
-    "login grok build"
+    "登录到 Grok Build",
+    "login grok build",
+    "sign in to grok build"
   ],
   phoneContinue: [
     "使用电话号码继续",

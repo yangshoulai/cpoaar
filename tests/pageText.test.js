@@ -13,6 +13,7 @@ test("中英文注册与登录文案命中相同语义", () => {
   assert.equal(containsPageText("Sign in with email", "xaiEmailSignIn"), true);
   assert.equal(containsPageText("Complete registration", "xaiCompleteRegistration"), true);
   assert.equal(containsPageText("完成注册", "xaiCompleteRegistration"), true);
+  assert.equal(containsPageText("Sign in to Grok Build", "xaiDeviceLoginTitle"), true);
 });
 
 test("文本规范化处理英文大小写、全角字符和空白", () => {
