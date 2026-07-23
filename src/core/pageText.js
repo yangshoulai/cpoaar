@@ -137,12 +137,15 @@ const PAGE_TEXT = Object.freeze({
     "check your phone"
   ],
   oneTimeCodeLogin: [
-    "一次性",
-    "验证码",
-    "one-time",
-    "one time",
-    "code",
-    "email"
+    "一次性验证码",
+    "验证码登录",
+    "使用验证码",
+    "one-time code",
+    "one time code",
+    "use a one-time code",
+    "sign in with a one-time code",
+    "log in with a one-time code",
+    "continue with a one-time code"
   ],
   accountCreateFailed: [
     "无法创建你的帐户",

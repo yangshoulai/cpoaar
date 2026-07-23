@@ -26,9 +26,10 @@ export class ReauthorizeDeleteAccountNode extends RegisterNode {
       reason
     });
     await deleteRegisteredAccount(ctx.config, record, {
-      reason
+      reason,
+      preserveLocalHistory: true
     });
-    return NodeResult.fail(ReauthorizeDeleteAccountNode.statuses.deleted, "账号已删除并终止流程", {
+    return NodeResult.fail(ReauthorizeDeleteAccountNode.statuses.deleted, "账号已删除，本地历史记录已保留并终止流程", {
       reauthorizeDeleteReason: reason
     });
   }

@@ -5,7 +5,8 @@ import { createServices } from "./index.js";
 const logger = createLogger("account-deletion");
 
 export async function deleteRegisteredAccount(config, record, {
-  reason = "手动删除"
+  reason = "手动删除",
+  preserveLocalHistory = false
 } = {}) {
   const emailAddress = record?.emailAddress || record?.emailAccount?.emailAddress || "";
   if (!emailAddress) {
@@ -47,9 +48,17 @@ export async function deleteRegisteredAccount(config, record, {
     throw new Error(errors.join("；"));
   }
 
-  if (record.id) {
-    await deleteRegisterHistory(record.id);
-  } else {
+  const historyResult = await finalizeLocalHistoryAfterAccountDeletion(record, {
+    preserveLocalHistory,
+    deleteHistory: deleteRegisterHistory
+  });
+  if (historyResult.preserved) {
+    logger.info("账号已从远端删除，按流程保留本地历史记录", {
+      email: emailAddress,
+      reason,
+      historyId: record.id || ""
+    });
+  } else if (!historyResult.deleted) {
     logger.info("账号没有本地历史记录 ID，跳过本地历史删除", {
       email: emailAddress,
       reason
@@ -59,4 +68,18 @@ export async function deleteRegisteredAccount(config, record, {
     email: emailAddress,
     reason
   });
+}
+
+export async function finalizeLocalHistoryAfterAccountDeletion(record, {
+  preserveLocalHistory = false,
+  deleteHistory = deleteRegisterHistory
+} = {}) {
+  if (preserveLocalHistory) {
+    return { preserved: true, deleted: false };
+  }
+  if (!record?.id) {
+    return { preserved: false, deleted: false };
+  }
+  await deleteHistory(record.id);
+  return { preserved: false, deleted: true };
 }

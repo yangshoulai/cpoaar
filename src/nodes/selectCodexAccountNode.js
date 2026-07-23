@@ -5,6 +5,7 @@ import { isOpenAiReauthorizeMode } from "../core/runModes.js";
 import {
   clickOneTimeCodeLoginButton,
   findAccountDeactivatedMessage,
+  findEmailVerificationCodeInput,
   findOneTimeCodeLoginButton,
   hasPhoneChallenge
 } from "./reauthorizeHelpers.js";
@@ -52,6 +53,10 @@ export class SelectCodexAccountNode extends RegisterNode {
       {
         name: "email_input",
         check: () => ctx.tabs.query("input[name='email']")
+      },
+      {
+        name: "email_verification_ready",
+        check: () => findEmailVerificationCodeInput(ctx)
       },
       {
         name: "one_time_code_login",
@@ -102,6 +107,11 @@ export class SelectCodexAccountNode extends RegisterNode {
         currentUrl: await ctx.tabs.getCurrentUrl()
       });
     }
+    if (accountResult.name === "email_verification_ready") {
+      return NodeResult.ok(SelectCodexAccountNode.statuses.emailVerificationReady, {
+        currentUrl: await ctx.tabs.getCurrentUrl()
+      });
+    }
     if (accountResult.name === "one_time_code_login") {
       return switchToOneTimeCodeLogin(ctx);
     }
@@ -120,7 +130,7 @@ export class SelectCodexAccountNode extends RegisterNode {
       },
       {
         name: "email_verification_ready",
-        check: () => ctx.tabs.query("input[name='code'], input[type='code']")
+        check: () => findEmailVerificationCodeInput(ctx)
       },
       {
         name: "one_time_code_login",
@@ -251,19 +261,24 @@ async function findAddEmailPage(ctx) {
 }
 
 async function switchToOneTimeCodeLogin(ctx) {
-  const clicked = await clickOneTimeCodeLoginButton(ctx);
+  const switchResult = await clickOneTimeCodeLoginButton(ctx);
   const currentUrl = await ctx.tabs.getCurrentUrl();
-  if (!clicked) {
+  if (!switchResult) {
     return NodeResult.fail("codex_oauth_unexpected_url", `未能点击一次性验证码登录按钮: ${currentUrl}`, { currentUrl });
   }
-  ctx.state.emailSubmittedAt = new Date().toISOString();
-  logger.info("OAuth 密码页切换为一次性验证码登录", {
-    currentUrl
-  });
-  return NodeResult.ok(SelectCodexAccountNode.statuses.emailVerificationReady, {
-    emailSubmittedAt: ctx.state.emailSubmittedAt,
-    currentUrl
-  });
+  if (switchResult.state === "clicked") {
+    ctx.state.emailSubmittedAt = new Date().toISOString();
+    logger.info("OAuth 密码页切换为一次性验证码登录", {
+      currentUrl,
+      button: switchResult.button
+    });
+    return NodeResult.ok(SelectCodexAccountNode.statuses.emailVerificationReady, {
+      emailSubmittedAt: ctx.state.emailSubmittedAt,
+      currentUrl
+    });
+  }
+  logger.info("OAuth 已处于一次性验证码登录页面", { currentUrl });
+  return NodeResult.ok(SelectCodexAccountNode.statuses.emailVerificationReady, { currentUrl });
 }
 
 function formatServiceError(error) {

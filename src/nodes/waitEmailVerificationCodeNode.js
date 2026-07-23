@@ -6,6 +6,7 @@ import { isOpenAiReauthorizeMode } from "../core/runModes.js";
 import {
   clickOneTimeCodeLoginButton,
   findAccountDeactivatedMessage,
+  findEmailVerificationCodeInput,
   findOneTimeCodeLoginButton,
   hasPhoneChallenge
 } from "./reauthorizeHelpers.js";
@@ -28,7 +29,7 @@ export class WaitEmailVerificationCodeNode extends RegisterNode {
   }
 
   async execute(ctx) {
-    const readyResult = await waitForAnyCondition([
+    let readyResult = await waitForAnyCondition([
       {
         name: "try_again",
         check: () => ctx.tabs.query("button[data-dd-action-name='Try again']")
@@ -39,7 +40,7 @@ export class WaitEmailVerificationCodeNode extends RegisterNode {
       },
       {
         name: "code_input",
-        check: () => ctx.tabs.query("input[name='code'], input[type='code']")
+        check: () => findEmailVerificationCodeInput(ctx)
       },
       {
         name: "one_time_code_login",
@@ -70,16 +71,23 @@ export class WaitEmailVerificationCodeNode extends RegisterNode {
       return NodeResult.ok(WaitEmailVerificationCodeNode.statuses.retryCurrent);
     }
     if (readyResult.name === "one_time_code_login") {
-      const clicked = await clickOneTimeCodeLoginButton(ctx);
-      if (!clicked) {
+      const switchResult = await clickOneTimeCodeLoginButton(ctx);
+      if (switchResult?.state === "code_input") {
+        readyResult = {
+          matched: true,
+          name: "code_input",
+          value: switchResult.codeInput
+        };
+      } else if (switchResult?.state === "clicked") {
+        ctx.state.emailSubmittedAt = new Date().toISOString();
+        logger.info("邮箱验证码节点切换为一次性验证码登录", { button: switchResult.button });
+        return NodeResult.ok(WaitEmailVerificationCodeNode.statuses.retryCurrent, {
+          emailSubmittedAt: ctx.state.emailSubmittedAt,
+          currentUrl: await ctx.tabs.getCurrentUrl()
+        });
+      } else {
         return NodeResult.fail("email_verification_failed", "未能点击一次性验证码登录按钮");
       }
-      ctx.state.emailSubmittedAt = new Date().toISOString();
-      logger.info("邮箱验证码节点切换为一次性验证码登录");
-      return NodeResult.ok(WaitEmailVerificationCodeNode.statuses.retryCurrent, {
-        emailSubmittedAt: ctx.state.emailSubmittedAt,
-        currentUrl: await ctx.tabs.getCurrentUrl()
-      });
     }
     if (readyResult.name === "account_deactivated") {
       return buildAccountDeactivatedResult(ctx);
@@ -114,7 +122,14 @@ export class WaitEmailVerificationCodeNode extends RegisterNode {
       const code = message.verificationCode;
       ctx.state.account.emailVerificationCode = code;
       logger.info("邮箱验证码已获取", { code });
-      const inputSelector = await resolveEmailCodeInputSelector(ctx);
+      const inputSelector = readyResult.value?.selector || await resolveEmailCodeInputSelector(ctx);
+      if (!inputSelector) {
+        return NodeResult.fail("email_verification_failed", "邮箱验证码输入框已消失", {
+          emailVerificationMessage: message,
+          emailVerificationCode: code,
+          currentUrl: await ctx.tabs.getCurrentUrl()
+        });
+      }
       await ctx.tabs.fill(inputSelector, code);
       await clickEmailCodeSubmitButton(ctx);
 
@@ -200,10 +215,8 @@ export class WaitEmailVerificationCodeNode extends RegisterNode {
 }
 
 async function resolveEmailCodeInputSelector(ctx) {
-  if (await ctx.tabs.query("input[name='code']")) {
-    return "input[name='code']";
-  }
-  return "input[type='code']";
+  const input = await findEmailVerificationCodeInput(ctx);
+  return input?.selector || "";
 }
 
 async function clickEmailCodeSubmitButton(ctx) {
