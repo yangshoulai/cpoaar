@@ -2,6 +2,7 @@ import { RegisterNode, NodeResult, buildFlowStoppedResult, isFlowStopped } from 
 import { waitForAnyCondition } from "../core/browser.js";
 import { createLogger } from "../core/logger.js";
 import { isOpenAiPhoneFirstRegisterFlow } from "../core/openAiRegisterFlows.js";
+import { containsPageText, getPageTextTerms } from "../core/pageText.js";
 
 const logger = createLogger("node.sms-code");
 const DEFAULT_SMS_WAIT_TIMEOUT_SECONDS = 60;
@@ -143,7 +144,7 @@ export class WaitSmsVerificationCodeNode extends RegisterNode {
 
       if (submitResult.name === "submit_error") {
         const errorText = String(submitResult.value);
-        if (errorText.includes("此电话号码近期已被使用。请稍后再试。")) {
+        if (containsPageText(errorText, "phoneRecentlyUsed")) {
           logger.warn("手机号近期已使用，跳过回调并回到 Codex OAuth");
           return buildRetryOrFail(ctx, "sms_verification_error", errorText, code);
         }
@@ -261,20 +262,7 @@ async function waitForTextSendError(ctx, timeoutMs, signal = null) {
 }
 
 async function detectTextSendError(ctx) {
-  return ctx.tabs.execute(() => {
-    const keywords = [
-      "无法向此电话号码发送文本消息",
-      "无法向该电话号码发送文本消息",
-      "无法发送文本消息",
-      "无法发送短信",
-      "can't send text messages to this phone number",
-      "can't send a text message to this phone number",
-      "cannot send text messages to this phone number",
-      "unable to send text messages to this phone number",
-      "unable to send a text message to this phone number",
-      "we can't send text messages to this phone number",
-      "we can’t send text messages to this phone number"
-    ];
+  return ctx.tabs.execute((keywords) => {
     const elements = Array.from(document.querySelectorAll([
       "[role='alert']",
       "[aria-live]",
@@ -307,22 +295,17 @@ async function detectTextSendError(ctx) {
         && style.display !== "none"
         && element.getClientRects().length > 0;
     }
-  });
+  }, [getPageTextTerms("smsSendFailed").map((term) => term.toLowerCase())]);
 }
 
 async function detectWhatsAppResendButton(ctx) {
-  return ctx.tabs.execute(() => {
+  return ctx.tabs.execute((keywords) => {
     const button = Array.from(document.querySelectorAll("button, input[type='button'], input[type='submit']"))
       .find((item) => {
         const text = getButtonText(item).toLowerCase().replace(/\s+/g, " ").trim();
         return isVisible(item)
           && text
-          && (
-            text.includes("重新发送 whatsapp 消息")
-            || text.includes("重新发送 whatsapp")
-            || text.includes("resend whatsapp message")
-            || text.includes("resend whatsapp")
-          );
+          && keywords.some((keyword) => keyword && text.includes(keyword));
       });
     if (!button) {
       return null;
@@ -349,7 +332,7 @@ async function detectWhatsAppResendButton(ctx) {
         && style.display !== "none"
         && element.getClientRects().length > 0;
     }
-  });
+  }, [getPageTextTerms("whatsAppResend").map((term) => term.toLowerCase())]);
 }
 
 async function submitSmsCode(ctx, code) {

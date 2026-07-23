@@ -1,6 +1,7 @@
 import { RegisterNode, NodeResult } from "../core/flow.js";
 import { sleep, waitForAnyCondition } from "../core/browser.js";
 import { createLogger } from "../core/logger.js";
+import { getPageTextTerms } from "../core/pageText.js";
 import { clickVisibleButtonByText, findVisibleButtonByText, XAI_SIGN_IN_URL } from "./xaiHelpers.js";
 
 const logger = createLogger("node.xai-signin");
@@ -9,15 +10,7 @@ const LOGIN_AFTER_CLICK_FAST_WAIT_MS = 10000;
 const LOGIN_AFTER_CLICK_FOLLOWUP_WAIT_MS = 35000;
 const LOGIN_SUBMIT_MAX_ATTEMPTS = 3;
 const PASSWORD_INPUT_SELECTOR = "input[name='password']";
-const EMAIL_SIGN_IN_BUTTON_KEYWORDS = [
-  "使用邮箱登录",
-  "使用电子邮件登录",
-  "sign in with email",
-  "log in with email",
-  "login with email",
-  "continue with email",
-  "use email"
-];
+const EMAIL_SIGN_IN_BUTTON_KEYWORDS = getPageTextTerms("xaiEmailSignIn");
 const EMAIL_SIGN_IN_ENTRY_MAX_STEPS = 6;
 
 export class XAiSignInNode extends RegisterNode {
@@ -495,7 +488,7 @@ async function waitForSignInSubmitButton(ctx, label) {
 }
 
 async function findSignInSubmitButton(ctx) {
-  return ctx.tabs.execute(() => {
+  return ctx.tabs.execute((keywords) => {
     const button = findBestSubmitButton();
     return button ? describeButton(button) : null;
 
@@ -504,7 +497,6 @@ async function findSignInSubmitButton(ctx) {
       if (direct && isClickable(direct)) {
         return direct;
       }
-      const keywords = ["下一步", "登录", "继续", "next", "sign in", "log in", "continue"];
       return Array.from(document.querySelectorAll("button"))
         .map((item) => ({ item, score: scoreButton(item, keywords) }))
         .filter((entry) => entry.score > 0)
@@ -552,11 +544,11 @@ async function findSignInSubmitButton(ctx) {
         && !element.disabled
         && element.getAttribute("aria-disabled") !== "true";
     }
-  });
+  }, [getPageTextTerms("xaiSignInSubmit")]);
 }
 
 async function clickSignInSubmitButton(ctx) {
-  return ctx.tabs.execute(() => {
+  return ctx.tabs.execute((keywords) => {
     const button = findBestSubmitButton();
     if (!button) {
       return { ok: false, button: null };
@@ -577,7 +569,6 @@ async function clickSignInSubmitButton(ctx) {
       if (direct && isClickable(direct)) {
         return direct;
       }
-      const keywords = ["下一步", "登录", "继续", "next", "sign in", "log in", "continue"];
       return Array.from(document.querySelectorAll("button"))
         .map((item) => ({ item, score: scoreButton(item, keywords) }))
         .filter((entry) => entry.score > 0)
@@ -615,7 +606,7 @@ async function clickSignInSubmitButton(ctx) {
         && !element.disabled
         && element.getAttribute("aria-disabled") !== "true";
     }
-  });
+  }, [getPageTextTerms("xaiSignInSubmit")]);
 }
 
 async function waitForTurnstileIfPresent(ctx) {

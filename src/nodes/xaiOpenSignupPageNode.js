@@ -1,17 +1,11 @@
 import { RegisterNode, NodeResult } from "../core/flow.js";
 import { sleep, waitForAnyCondition } from "../core/browser.js";
 import { createLogger } from "../core/logger.js";
+import { getPageTextTerms } from "../core/pageText.js";
 import { clickVisibleButtonByText, findVisibleButtonByText, XAI_SIGN_UP_URL } from "./xaiHelpers.js";
 
 const logger = createLogger("node.xai-signup");
-const EMAIL_ENTRY_BUTTON_KEYWORDS = [
-  "使用邮箱注册",
-  "使用邮箱登录",
-  "sign up with email",
-  "sign in with email",
-  "log in with email",
-  "continue with email"
-];
+const EMAIL_ENTRY_BUTTON_KEYWORDS = getPageTextTerms("xaiEmailEntry");
 const EMAIL_ENTRY_CLICK_MAX_ATTEMPTS = 2;
 const EMAIL_ENTRY_CLICK_DELAY_MS = 1000;
 
@@ -191,15 +185,13 @@ function buildFallbackEmailAccount(emailAddress) {
 }
 
 async function clickXAiEmailSubmitButton(ctx) {
-  const preciseResult = await ctx.tabs.execute(() => {
+  const preciseResult = await ctx.tabs.execute((keywords, excludeKeywords) => {
     const button = Array.from(document.querySelectorAll("button"))
       .find((item) => {
         const text = String(item.textContent || "").trim().toLowerCase();
         return isClickable(item)
-          && !text.includes("使用邮箱注册")
-          && !text.includes("使用邮箱登录")
-          && !text.includes("with email")
-          && (text === "注册" || text.includes("sign up") || text.includes("continue"));
+          && !excludeKeywords.some((keyword) => keyword && text.includes(keyword))
+          && keywords.some((keyword) => keyword && text.includes(keyword));
       });
     if (!button) {
       return { ok: false, button: null };
@@ -223,9 +215,14 @@ async function clickXAiEmailSubmitButton(ctx) {
         && !element.disabled
         && element.getAttribute("aria-disabled") !== "true";
     }
-  });
+  }, [
+    getPageTextTerms("xaiEmailSubmit").map((term) => term.toLowerCase()),
+    getPageTextTerms("xaiEmailEntryExclude").map((term) => term.toLowerCase())
+  ]);
   if (preciseResult.ok) {
     return preciseResult;
   }
-  return clickVisibleButtonByText(ctx, ["注册", "sign up", "continue"]);
+  return clickVisibleButtonByText(ctx, getPageTextTerms("xaiEmailSubmit"), {
+    excludeKeywords: getPageTextTerms("xaiEmailEntryExclude")
+  });
 }

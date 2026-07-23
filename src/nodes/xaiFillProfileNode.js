@@ -1,16 +1,12 @@
 import { RegisterNode, NodeResult } from "../core/flow.js";
 import { waitForAnyCondition } from "../core/browser.js";
 import { createLogger } from "../core/logger.js";
+import { getPageTextTerms } from "../core/pageText.js";
 import { clickVisibleButtonByText, findVisibleButtonByText } from "./xaiHelpers.js";
 
 const logger = createLogger("node.xai-profile");
 const TURNSTILE_WAIT_TIMEOUT_MS = 120000;
-const EXISTING_EMAIL_SIGN_IN_BUTTON_KEYWORDS = [
-  "使用邮箱登录",
-  "sign in with email",
-  "log in with email",
-  "continue with email"
-];
+const EXISTING_EMAIL_SIGN_IN_BUTTON_KEYWORDS = getPageTextTerms("xaiEmailSignIn");
 const PROFILE_SUBMIT_OUTCOME_TIMEOUT_MS = 10000;
 const SIGN_IN_NAVIGATION_TIMEOUT_MS = 15000;
 
@@ -85,7 +81,7 @@ export class XAiFillProfileNode extends RegisterNode {
       return NodeResult.fail("xai_profile_submit_failed", "xAI 完成注册按钮不可用");
     }
 
-    const submitResult = await clickVisibleButtonByText(ctx, ["完成注册", "complete registration", "sign up", "注册"]);
+    const submitResult = await clickVisibleButtonByText(ctx, getPageTextTerms("xaiCompleteRegistration"));
     if (!submitResult.ok) {
       return NodeResult.fail("xai_profile_submit_failed", "xAI 完成注册按钮点击失败");
     }
@@ -211,8 +207,7 @@ function isXAiSignInPage(value) {
 }
 
 async function findCompleteRegistrationButton(ctx) {
-  return ctx.tabs.execute(() => {
-    const keywords = ["完成注册", "complete registration", "sign up", "注册"];
+  return ctx.tabs.execute((keywords) => {
     const button = Array.from(document.querySelectorAll("button"))
       .find((item) => {
         const text = String(item.textContent || "").trim().toLowerCase();
@@ -232,7 +227,7 @@ async function findCompleteRegistrationButton(ctx) {
         && !element.disabled
         && element.getAttribute("aria-disabled") !== "true";
     }
-  });
+  }, [getPageTextTerms("xaiCompleteRegistration")]);
 }
 
 async function waitForTurnstileIfPresent(ctx) {

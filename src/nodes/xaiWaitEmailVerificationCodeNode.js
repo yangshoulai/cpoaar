@@ -1,6 +1,7 @@
 import { RegisterNode, NodeResult, buildFlowStoppedResult, isFlowStopped } from "../core/flow.js";
 import { sleep, waitForAnyCondition } from "../core/browser.js";
 import { createLogger } from "../core/logger.js";
+import { getPageTextTerms } from "../core/pageText.js";
 import { clickVisibleButtonByText, normalizeXAiVerificationCode } from "./xaiHelpers.js";
 
 const logger = createLogger("node.xai-email-code");
@@ -75,7 +76,7 @@ export class XAiWaitEmailVerificationCodeNode extends RegisterNode {
       }
 
       logger.info("xAI 邮箱验证码未自动提交，尝试点击确认邮箱按钮");
-      const confirmResult = await clickVisibleButtonByText(ctx, ["确认邮箱", "confirm email", "verify email", "确认"]);
+      const confirmResult = await clickVisibleButtonByText(ctx, getPageTextTerms("xaiConfirmEmail"));
       if (!confirmResult.ok) {
         return NodeResult.fail("xai_email_verify_failed", "输入 xAI 邮箱验证码后未进入资料页，且未找到确认邮箱按钮", buildResultData(ctx, message, code));
       }

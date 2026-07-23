@@ -1,4 +1,5 @@
 import { createLogger } from "./logger.js";
+import { getPageTextTerms } from "./pageText.js";
 
 const logger = createLogger("browser");
 
@@ -109,23 +110,23 @@ export class TabController {
   }
 
   async findEmailInput() {
-    return this.execute(runBrowserPageAction, ["findEmailInput"]);
+    return this.execute(runBrowserPageAction, ["findEmailInput", null, null, getBrowserPageTextOptions()]);
   }
 
   async fillEmailInput(value) {
-    return this.execute(runBrowserPageAction, ["fillEmailInput", value]);
+    return this.execute(runBrowserPageAction, ["fillEmailInput", value, null, getBrowserPageTextOptions()]);
   }
 
   async findSignupButton() {
-    return this.execute(runBrowserPageAction, ["findSignupButton"]);
+    return this.execute(runBrowserPageAction, ["findSignupButton", null, null, getBrowserPageTextOptions()]);
   }
 
   async clickSignupButton() {
-    return this.execute(runBrowserPageAction, ["clickSignupButton"]);
+    return this.execute(runBrowserPageAction, ["clickSignupButton", null, null, getBrowserPageTextOptions()]);
   }
 
   async clickPrimarySubmitButton() {
-    return this.execute(runBrowserPageAction, ["clickPrimarySubmitButton"]);
+    return this.execute(runBrowserPageAction, ["clickPrimarySubmitButton", null, null, getBrowserPageTextOptions()]);
   }
 
   async queryText(selector) {
@@ -385,7 +386,7 @@ function buildCookieUrl(cookie) {
   return `${protocol}//${domain}${cookie.path || "/"}`;
 }
 
-function runBrowserPageAction(action, firstArg = null, secondArg = null) {
+function runBrowserPageAction(action, firstArg = null, secondArg = null, pageText = {}) {
   function describeElement(element) {
     return {
       tagName: element.tagName,
@@ -459,7 +460,7 @@ function runBrowserPageAction(action, firstArg = null, secondArg = null) {
     if (attrs.includes("email")) {
       score += 10;
     }
-    if (attrs.includes("邮箱") || attrs.includes("电子邮件") || attrs.includes("邮件地址")) {
+    if (hasAnyKeyword(attrs, pageText.emailFieldHint || [])) {
       score += 10;
     }
     if (element.closest("div[role='dialog']")) {
@@ -476,7 +477,7 @@ function runBrowserPageAction(action, firstArg = null, secondArg = null) {
     if (direct && isClickableButton(direct)) {
       return direct;
     }
-    const keywords = ["注册", "创建账号", "创建帐户", "sign up", "signup", "create account", "get started"];
+    const keywords = pageText.signUp || [];
     return Array.from(document.querySelectorAll("button"))
       .find((button) => isClickableButton(button) && hasAnyKeyword(button.textContent, keywords)) || null;
   }
@@ -492,7 +493,7 @@ function runBrowserPageAction(action, firstArg = null, secondArg = null) {
         return button;
       }
     }
-    const keywords = ["继续", "下一步", "提交", "注册", "continue", "next", "submit", "sign up"];
+    const keywords = pageText.primarySubmit || [];
     return Array.from(document.querySelectorAll("button"))
       .find((button) => isClickableButton(button) && hasAnyKeyword(button.textContent, keywords)) || null;
   }
@@ -505,8 +506,8 @@ function runBrowserPageAction(action, firstArg = null, secondArg = null) {
   }
 
   function hasAnyKeyword(text, keywords) {
-    const normalized = (text || "").trim().toLowerCase();
-    return keywords.some((keyword) => normalized.includes(keyword));
+    const normalized = String(text || "").normalize("NFKC").replace(/\s+/g, " ").trim().toLowerCase();
+    return keywords.some((keyword) => normalized.includes(String(keyword || "").normalize("NFKC").replace(/\s+/g, " ").trim().toLowerCase()));
   }
 
   function clickElement(element) {
@@ -586,4 +587,12 @@ function runBrowserPageAction(action, firstArg = null, secondArg = null) {
   }
 
   return null;
+}
+
+function getBrowserPageTextOptions() {
+  return {
+    emailFieldHint: getPageTextTerms("emailFieldHint"),
+    signUp: getPageTextTerms("signUp"),
+    primarySubmit: getPageTextTerms("primarySubmit")
+  };
 }

@@ -1,6 +1,7 @@
 import { RegisterNode, NodeResult, buildFlowStoppedResult, isFlowStopped } from "../core/flow.js";
 import { waitForAnyCondition, sleep } from "../core/browser.js";
 import { createLogger } from "../core/logger.js";
+import { containsPageText } from "../core/pageText.js";
 import { isOpenAiReauthorizeMode } from "../core/runModes.js";
 import {
   clickOneTimeCodeLoginButton,
@@ -120,11 +121,11 @@ export class WaitEmailVerificationCodeNode extends RegisterNode {
       const submitResult = await waitForAnyCondition([
         {
           name: "account_create_error",
-          check: () => queryTextContains(ctx, "span[slot='errorMessage']", "无法创建你的帐户")
+          check: () => queryTextContains(ctx, "span[slot='errorMessage']", "accountCreateFailed")
         },
         {
           name: "invalid_code",
-          check: () => queryTextContains(ctx, "span[slot='errorMessage']", "代码不正确")
+          check: () => queryTextContains(ctx, "span[slot='errorMessage']", "invalidVerificationCode")
         },
         {
           name: "account_deactivated",
@@ -230,9 +231,9 @@ function buildAccountDeactivatedResult(ctx, data = {}) {
   return NodeResult.fail("account_create_failed", "账号已停用: account_deactivated", data);
 }
 
-async function queryTextContains(ctx, selector, expectedText) {
+async function queryTextContains(ctx, selector, pageTextName) {
   const text = await ctx.tabs.queryText(selector);
-  return text && text.includes(expectedText) ? text : null;
+  return text && containsPageText(text, pageTextName) ? text : null;
 }
 
 async function isChatGptReady(ctx) {
@@ -244,7 +245,7 @@ async function isChatGptReady(ctx) {
   if (!isChatGptHomeUrl(url)) {
     return null;
   }
-  return queryTextContains(ctx, "p", "你已准备就绪");
+  return queryTextContains(ctx, "p", "chatGptReady");
 }
 
 function isChatGptHomeUrl(value) {

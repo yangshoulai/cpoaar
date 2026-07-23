@@ -2,7 +2,11 @@ import { RegisterNode, NodeResult } from "../core/flow.js";
 import { sleep, waitForAnyCondition } from "../core/browser.js";
 import { createLogger } from "../core/logger.js";
 import { ACCOUNT_TYPES } from "../core/runModes.js";
-import { clickVisibleButtonByText, findVisibleButtonByText } from "./xaiHelpers.js";
+import { getPageTextTerms } from "../core/pageText.js";
+import {
+  clickVisibleButtonByText,
+  findVisibleConsentAllowButton
+} from "./xaiHelpers.js";
 
 const logger = createLogger("node.xai-oauth");
 const XAI_OAUTH_RATE_LIMIT_MAX_ATTEMPTS = 3;
@@ -79,7 +83,7 @@ export class XAiRefreshOAuthAndLoginNode extends RegisterNode {
       },
       {
         name: "allow_button",
-        check: () => findVisibleButtonByText(ctx, ["允许", "allow", "authorize"])
+        check: () => findVisibleConsentAllowButton(ctx)
       }
     ], {
       timeoutMs: 30000,
@@ -99,7 +103,7 @@ export class XAiRefreshOAuthAndLoginNode extends RegisterNode {
 
     const isDeviceFlow = isXAiDeviceOauthUrl(oauth.url) || readyResult.name.startsWith("device_");
     if (readyResult.name === "device_login") {
-      const continueResult = await clickVisibleButtonByText(ctx, ["继续", "continue"]);
+      const continueResult = await clickVisibleButtonByText(ctx, getPageTextTerms("continueAction"));
       if (!continueResult.ok) {
         return NodeResult.fail("xai_oauth_device_continue_failed", "未能点击 xAI device 登录继续按钮", {
           currentUrl: await ctx.tabs.getCurrentUrl(),
@@ -117,7 +121,7 @@ export class XAiRefreshOAuthAndLoginNode extends RegisterNode {
         },
         {
           name: "allow_button",
-          check: () => findVisibleButtonByText(ctx, ["允许", "allow", "authorize"])
+          check: () => findVisibleConsentAllowButton(ctx)
         }
       ], {
         timeoutMs: 30000,
@@ -157,12 +161,12 @@ async function getRateLimitedOauthUrl(ctx) {
 }
 
 async function findDeviceLoginPage(ctx) {
-  return ctx.tabs.execute(() => {
+  return ctx.tabs.execute((titleTerms, continueTerms) => {
     const title = Array.from(document.querySelectorAll("h1"))
       .map((item) => String(item.textContent || "").trim())
       .find((text) => {
         const normalized = text.toLowerCase();
-        return text === "登录 Grok Build" || normalized === "login grok build";
+        return titleTerms.some((term) => normalized === term);
       });
     if (!title) {
       return null;
@@ -170,7 +174,7 @@ async function findDeviceLoginPage(ctx) {
     const button = Array.from(document.querySelectorAll("button"))
       .find((item) => {
         const text = String(item.textContent || "").trim().toLowerCase();
-        return isClickable(item) && (text.includes("继续") || text.includes("continue"));
+        return isClickable(item) && continueTerms.some((term) => text.includes(term));
       });
     return button ? {
       title,
@@ -185,7 +189,10 @@ async function findDeviceLoginPage(ctx) {
         && !element.disabled
         && element.getAttribute("aria-disabled") !== "true";
     }
-  });
+  }, [
+    getPageTextTerms("xaiDeviceLoginTitle").map((term) => term.toLowerCase()),
+    getPageTextTerms("continueAction").map((term) => term.toLowerCase())
+  ]);
 }
 
 function isXAiDeviceOauthUrl(value) {

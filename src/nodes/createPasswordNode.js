@@ -1,6 +1,7 @@
 import { RegisterNode, NodeResult } from "../core/flow.js";
 import { waitForAnyCondition } from "../core/browser.js";
 import { createLogger } from "../core/logger.js";
+import { getPageTextTerms } from "../core/pageText.js";
 import { isOpenAiPhoneFirstRegisterFlow } from "../core/openAiRegisterFlows.js";
 
 const logger = createLogger("node.create-password");
@@ -120,16 +121,7 @@ function buildPhoneFirstPhoneRetryOrFail(ctx, message, data = {}) {
 }
 
 async function findPhoneAccountExistsError(ctx) {
-  return ctx.tabs.execute(() => {
-    const keywords = [
-      "与此电话号码相关联的帐户已存在",
-      "与此电话号码相关联的账户已存在",
-      "与该电话号码相关联的帐户已存在",
-      "与该电话号码相关联的账户已存在",
-      "an account already exists with this phone number",
-      "an account associated with this phone number already exists",
-      "account already exists for this phone number"
-    ];
+  return ctx.tabs.execute((keywords) => {
     const elements = Array.from(document.querySelectorAll([
       "[role='alert']",
       "[aria-live]",
@@ -165,7 +157,7 @@ async function findPhoneAccountExistsError(ctx) {
         && style.display !== "none"
         && element.getClientRects().length > 0;
     }
-  });
+  }, [getPageTextTerms("phoneAccountExists").map((term) => term.toLowerCase())]);
 }
 
 async function isAboutYouReady(ctx) {

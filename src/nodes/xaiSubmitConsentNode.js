@@ -3,10 +3,11 @@ import { sleep, waitForAnyCondition } from "../core/browser.js";
 import { createLogger } from "../core/logger.js";
 import { appendRegisterHistory } from "../core/storage.js";
 import { ACCOUNT_TYPES, RUN_MODES, isXAiRegisterMode, isXAiReauthorizeMode } from "../core/runModes.js";
+import { getPageTextTerms } from "../core/pageText.js";
 import {
   buildXAiRedirectUrl,
-  clickVisibleButtonByText,
-  findVisibleButtonByText,
+  clickVisibleConsentAllowButton,
+  findVisibleConsentAllowButton,
   getReadonlyAuthorizationCode
 } from "./xaiHelpers.js";
 
@@ -37,7 +38,7 @@ export class XAiSubmitConsentNode extends RegisterNode {
       },
       {
         name: "allow_button",
-        check: () => findVisibleButtonByText(ctx, ["允许", "allow", "authorize"])
+        check: () => findVisibleConsentAllowButton(ctx)
       }
     ], {
       timeoutMs: 30000,
@@ -131,7 +132,7 @@ export class XAiSubmitConsentNode extends RegisterNode {
       },
       {
         name: "allow_button",
-        check: () => findVisibleButtonByText(ctx, ["允许", "allow", "authorize"])
+        check: () => findVisibleConsentAllowButton(ctx)
       }
     ], {
       timeoutMs: 30000,
@@ -145,7 +146,7 @@ export class XAiSubmitConsentNode extends RegisterNode {
     const allowButtonReady = await waitForAnyCondition([
       {
         name: "allow_button",
-        check: () => findVisibleButtonByText(ctx, ["允许", "allow", "authorize"])
+        check: () => findVisibleConsentAllowButton(ctx)
       }
     ], {
       timeoutMs: 30000,
@@ -156,7 +157,7 @@ export class XAiSubmitConsentNode extends RegisterNode {
       return NodeResult.fail("xai_oauth_consent_missing", `未找到 xAI OAuth 允许按钮: ${await ctx.tabs.getCurrentUrl()}`);
     }
 
-    const clickResult = await clickVisibleButtonByText(ctx, ["允许", "allow", "authorize"]);
+    const clickResult = await clickVisibleConsentAllowButton(ctx);
     if (!clickResult.ok) {
       return NodeResult.fail("xai_oauth_allow_failed", "未能点击 xAI OAuth 允许按钮");
     }
@@ -225,8 +226,7 @@ export class XAiSubmitConsentNode extends RegisterNode {
 }
 
 async function approveDeviceConsent(ctx) {
-  return ctx.tabs.execute(() => {
-    const positiveKeywords = ["允许", "allow", "authorize", "approve"];
+  return ctx.tabs.execute((positiveKeywords, negativeKeywords) => {
     const button = findPositiveSubmitButton();
     const form = button?.form
       || document.querySelector("form[action*='/oauth2/device/approve']")
@@ -273,7 +273,7 @@ async function approveDeviceConsent(ctx) {
       if (!text || !positiveKeywords.some((keyword) => text.includes(keyword))) {
         return 0;
       }
-      if (isNegativeAllowText(text)) {
+      if (negativeKeywords.some((keyword) => keyword && text.includes(keyword))) {
         return 0;
       }
       let score = 10;
@@ -380,21 +380,6 @@ async function approveDeviceConsent(ctx) {
       return String(element.textContent || element.getAttribute("aria-label") || "").trim();
     }
 
-    function isNegativeAllowText(text) {
-      return [
-        "不允许",
-        "拒绝",
-        "取消",
-        "don't allow",
-        "do not allow",
-        "deny",
-        "decline",
-        "reject",
-        "cancel",
-        "not now"
-      ].some((keyword) => text.includes(keyword));
-    }
-
     function isClickable(element) {
       const style = window.getComputedStyle(element);
       return style.visibility !== "hidden"
@@ -403,7 +388,10 @@ async function approveDeviceConsent(ctx) {
         && !element.disabled
         && element.getAttribute("aria-disabled") !== "true";
     }
-  });
+  }, [
+    getPageTextTerms("consentAllow").map((term) => term.toLowerCase()),
+    getPageTextTerms("consentDeny").map((term) => term.toLowerCase())
+  ]);
 }
 
 async function finalizeXAiAccountExport(ctx, {

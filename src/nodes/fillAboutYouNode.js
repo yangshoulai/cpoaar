@@ -1,6 +1,7 @@
 import { RegisterNode, NodeResult } from "../core/flow.js";
 import { waitForAnyCondition } from "../core/browser.js";
 import { createLogger } from "../core/logger.js";
+import { containsPageText, getPageTextTerms } from "../core/pageText.js";
 
 const logger = createLogger("node.about-you");
 
@@ -67,9 +68,9 @@ export class FillAboutYouNode extends RegisterNode {
   }
 }
 
-async function queryTextContains(ctx, selector, expectedText) {
+async function queryTextContains(ctx, selector, pageTextName) {
   const text = await ctx.tabs.queryText(selector);
-  return text && text.includes(expectedText) ? text : null;
+  return text && containsPageText(text, pageTextName) ? text : null;
 }
 
 async function queryAnyTextContains(ctx, selector, expectedText) {
@@ -86,7 +87,7 @@ async function waitForAboutYouSubmitResult(ctx) {
     const result = await waitForAnyCondition([
       {
         name: "submit_error",
-        check: () => queryTextContains(ctx, "ul[class^='_errors_']", "无法创建你的帐户")
+        check: () => queryTextContains(ctx, "ul[class^='_errors_']", "accountCreateFailed")
       },
       {
         name: "user_already_exists",
@@ -98,7 +99,7 @@ async function waitForAboutYouSubmitResult(ctx) {
       },
       {
         name: "ready_dialog",
-        check: () => ctx.tabs.query("dialog[aria-label*='你已准备就绪']")
+        check: () => findReadyDialog(ctx)
       },
       {
         name: "chatgpt_dialog",
@@ -135,6 +136,16 @@ async function waitForAboutYouSubmitResult(ctx) {
     }
     logger.info("出生日期确认弹框已提交", clickResult);
   }
+}
+
+async function findReadyDialog(ctx) {
+  return ctx.tabs.execute((terms) => {
+    return Array.from(document.querySelectorAll("dialog"))
+      .find((dialog) => {
+        const label = String(dialog.getAttribute("aria-label") || "").toLowerCase();
+        return terms.some((term) => term && label.includes(term));
+      })?.getAttribute("aria-label") || null;
+  }, [getPageTextTerms("chatGptReady").map((term) => term.toLowerCase())]);
 }
 
 async function findAgeConfirmationDialog(ctx) {
@@ -351,14 +362,17 @@ async function findAboutYouValidationError(ctx) {
 }
 
 async function findUseBirthDateLink(ctx) {
-  return ctx.tabs.execute(() => {
+  return ctx.tabs.execute((terms) => {
     const links = Array.from(document.querySelectorAll("a"));
-    const link = links.find((item) => item.textContent.includes("使用出生日期"));
+    const link = links.find((item) => {
+      const text = String(item.textContent || "").toLowerCase();
+      return terms.some((term) => term && text.includes(term));
+    });
     return link ? {
       text: link.textContent.trim(),
       href: link.getAttribute("href") || ""
     } : null;
-  });
+  }, [getPageTextTerms("useBirthDate").map((term) => term.toLowerCase())]);
 }
 
 async function fillAgeOrBirthDate(ctx, account) {

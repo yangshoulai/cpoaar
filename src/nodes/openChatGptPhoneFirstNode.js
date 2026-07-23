@@ -1,6 +1,7 @@
 import { RegisterNode, NodeResult } from "../core/flow.js";
 import { waitForAnyCondition } from "../core/browser.js";
 import { createLogger } from "../core/logger.js";
+import { getPageTextTerms } from "../core/pageText.js";
 
 const logger = createLogger("node.open-phone-first");
 const CHATGPT_HOME_URL = "https://chatgpt.com/";
@@ -168,7 +169,7 @@ async function clickSignupButton(ctx) {
 }
 
 async function findPhoneContinueButton(ctx) {
-  return ctx.tabs.execute(() => {
+  return ctx.tabs.execute((keywords) => {
     const button = findButton();
     return button ? describeButton(button) : null;
 
@@ -185,13 +186,7 @@ async function findPhoneContinueButton(ctx) {
       if (!text) {
         return false;
       }
-      return text.includes("使用电话号码继续")
-        || text.includes("电话号码继续")
-        || text.includes("使用手机号继续")
-        || text.includes("手机号继续")
-        || text.includes("continue with phone number")
-        || text.includes("continue with phone")
-        || text.includes("use phone number");
+      return keywords.some((keyword) => keyword && text.includes(keyword));
     }
 
     function describeButton(button) {
@@ -219,11 +214,11 @@ async function findPhoneContinueButton(ctx) {
         && style.display !== "none"
         && element.getClientRects().length > 0;
     }
-  });
+  }, [getPageTextTerms("phoneContinue").map((term) => term.toLowerCase())]);
 }
 
 async function clickPhoneContinueButton(ctx) {
-  return ctx.tabs.execute(() => {
+  return ctx.tabs.execute((keywords) => {
     const button = findButton();
     if (!button) {
       return false;
@@ -247,13 +242,7 @@ async function clickPhoneContinueButton(ctx) {
       if (!text) {
         return false;
       }
-      return text.includes("使用电话号码继续")
-        || text.includes("电话号码继续")
-        || text.includes("使用手机号继续")
-        || text.includes("手机号继续")
-        || text.includes("continue with phone number")
-        || text.includes("continue with phone")
-        || text.includes("use phone number");
+      return keywords.some((keyword) => keyword && text.includes(keyword));
     }
 
     function clickElement(element) {
@@ -278,7 +267,7 @@ async function clickPhoneContinueButton(ctx) {
         && style.display !== "none"
         && element.getClientRects().length > 0;
     }
-  });
+  }, [getPageTextTerms("phoneContinue").map((term) => term.toLowerCase())]);
 }
 
 async function clickSelectorRobustly(ctx, selector) {

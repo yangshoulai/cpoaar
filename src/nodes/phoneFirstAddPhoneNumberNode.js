@@ -1,20 +1,11 @@
 import { RegisterNode, NodeResult } from "../core/flow.js";
 import { sleep, waitForAnyCondition } from "../core/browser.js";
 import { createLogger } from "../core/logger.js";
+import { containsPageText, getPageTextTerms } from "../core/pageText.js";
 import { CHATGPT_PHONE_INPUT_SELECTOR, ensureChatGptPhoneInput } from "./openChatGptPhoneFirstNode.js";
 
 const logger = createLogger("node.phone-first-phone");
 const WHATSAPP_DEFAULT_NOTICE_WAIT_MS = 1500;
-
-const RETRYABLE_PHONE_ERRORS = [
-  "电话号码已被使用",
-  "电话号码无效",
-  "请继续通过 WhatsApp 发送验证码",
-  "通过 WhatsApp 向该号码发送一次性验证码",
-  "此电话号码已关联到可关联的最多账户",
-  "手机号未进入创建密码页",
-  "手机号已注册或不可注册"
-];
 
 export class PhoneFirstAddPhoneNumberNode extends RegisterNode {
   static name = "phone_first_add_phone_number";
@@ -38,7 +29,7 @@ export class PhoneFirstAddPhoneNumberNode extends RegisterNode {
       if (
         result.status === "phone_submit_error"
         && result.error
-        && RETRYABLE_PHONE_ERRORS.some((text) => result.error.includes(text))
+        && (result.data?.retryablePhoneNumber || containsPageText(result.error, "phoneRetryableError"))
         && retryCount < maxAttempts
       ) {
         retryCount += 1;
@@ -158,7 +149,10 @@ export class PhoneFirstAddPhoneNumberNode extends RegisterNode {
     };
     if (!waitResult.matched) {
       await ctx.services.smsService.callback(mobileNumber, false);
-      return NodeResult.fail("phone_submit_error", `手机号未进入创建密码页，可能已注册或不可注册: ${data.currentUrl}`, data);
+      return NodeResult.fail("phone_submit_error", `手机号未进入创建密码页，可能已注册或不可注册: ${data.currentUrl}`, {
+        ...data,
+        retryablePhoneNumber: true
+      });
     }
     if (waitResult.name === "submit_error") {
       await ctx.services.smsService.callback(mobileNumber, false);
@@ -166,7 +160,10 @@ export class PhoneFirstAddPhoneNumberNode extends RegisterNode {
     }
     if (waitResult.name === "existing_account_password") {
       await ctx.services.smsService.callback(mobileNumber, false);
-      return NodeResult.fail("phone_submit_error", "手机号已注册或不可注册：提交后进入密码登录页", data);
+      return NodeResult.fail("phone_submit_error", "手机号已注册或不可注册：提交后进入密码登录页", {
+        ...data,
+        retryablePhoneNumber: true
+      });
     }
     return NodeResult.ok(PhoneFirstAddPhoneNumberNode.statuses.success, data);
   }
@@ -450,14 +447,7 @@ async function waitForWhatsAppDefaultNotice(ctx) {
 }
 
 async function detectWhatsAppDefaultNotice(ctx) {
-  return ctx.tabs.execute(() => {
-    const keywords = [
-      "我们会通过 whatsapp 向该号码发送一次性验证码进行验证",
-      "通过 whatsapp 向该号码发送一次性验证码",
-      "whatsapp 向该号码发送一次性验证码",
-      "send a one-time code to this number via whatsapp",
-      "send a one-time code via whatsapp"
-    ];
+  return ctx.tabs.execute((keywords) => {
     const visibleText = String(document.body?.innerText || "")
       .replace(/\s+/g, " ")
       .trim();
@@ -481,7 +471,7 @@ async function detectWhatsAppDefaultNotice(ctx) {
       const end = Math.min(text.length, index + keyword.length + 120);
       return text.slice(start, end).trim();
     }
-  });
+  }, [getPageTextTerms("whatsAppCodeNotice").map((term) => term.toLowerCase())]);
 }
 
 function rememberTriedActivation(ctx, mobileNumber) {

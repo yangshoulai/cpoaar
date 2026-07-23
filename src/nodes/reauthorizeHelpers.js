@@ -1,3 +1,5 @@
+import { getPageTextTerms } from "../core/pageText.js";
+
 export async function findAccountDeactivatedMessage(ctx) {
   return ctx.tabs.execute(() => {
     const element = Array.from(document.querySelectorAll("span"))
@@ -23,20 +25,21 @@ export async function isPhoneOtpSelectChannelPage(ctx) {
   if (!await ctx.tabs.urlContains("/phone-otp/select-channel")) {
     return false;
   }
-  return Boolean(await ctx.tabs.execute(() => {
-    return document.body?.textContent?.includes("验证您的手机号码") || false;
-  }));
+  return Boolean(await ctx.tabs.execute((keywords) => {
+    const text = String(document.body?.textContent || "").toLowerCase();
+    return keywords.some((keyword) => keyword && text.includes(keyword));
+  }, [getPageTextTerms("phoneOtpSelectChannel").map((term) => term.toLowerCase())]));
 }
 
 export async function isPhoneVerificationCodePage(ctx) {
   if (!await ctx.tabs.urlContains("/phone-verification")) {
     return false;
   }
-  return Boolean(await ctx.tabs.execute(() => {
-    const text = document.body?.textContent || "";
-    const hasPhonePrompt = text.includes("查看你的手机") || text.includes("Check your phone");
+  return Boolean(await ctx.tabs.execute((keywords) => {
+    const text = String(document.body?.textContent || "").toLowerCase();
+    const hasPhonePrompt = keywords.some((keyword) => keyword && text.includes(keyword));
     return hasPhonePrompt && Boolean(document.querySelector("input[name='code']"));
-  }));
+  }, [getPageTextTerms("phoneVerificationPrompt").map((term) => term.toLowerCase())]));
 }
 
 export async function resolvePhoneInputSelector(ctx) {
@@ -63,11 +66,11 @@ export async function resolveVerificationCodeInputSelector(ctx) {
 }
 
 export async function findOneTimeCodeLoginButton(ctx) {
-  return ctx.tabs.execute(runOneTimeCodeLoginButtonAction, ["find"]);
+  return ctx.tabs.execute(runOneTimeCodeLoginButtonAction, ["find", getPageTextTerms("oneTimeCodeLogin")]);
 }
 
 export async function clickOneTimeCodeLoginButton(ctx) {
-  return ctx.tabs.execute(runOneTimeCodeLoginButtonAction, ["click"]);
+  return ctx.tabs.execute(runOneTimeCodeLoginButtonAction, ["click", getPageTextTerms("oneTimeCodeLogin")]);
 }
 
 export function promptRequired(message) {
@@ -75,14 +78,14 @@ export function promptRequired(message) {
   return String(value || "").trim();
 }
 
-function runOneTimeCodeLoginButtonAction(action) {
+function runOneTimeCodeLoginButtonAction(action, inputKeywords = []) {
   const passwordInput = document.querySelector("input[name='current-password']");
   if (!passwordInput) {
     return null;
   }
   const candidates = Array.from(document.querySelectorAll('button[name="intent"]'))
     .filter((button) => !button.disabled && button.getAttribute("aria-disabled") !== "true");
-  const keywords = ["一次性", "验证码", "one-time", "one time", "code", "email"];
+  const keywords = inputKeywords.map((keyword) => String(keyword || "").toLowerCase());
   const button = candidates.find((item) => {
     const text = `${item.textContent || ""} ${item.value || ""}`.toLowerCase();
     return keywords.some((keyword) => text.includes(keyword));

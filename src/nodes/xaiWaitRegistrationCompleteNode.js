@@ -1,15 +1,11 @@
 import { RegisterNode, NodeResult } from "../core/flow.js";
 import { waitForAnyCondition } from "../core/browser.js";
 import { createLogger } from "../core/logger.js";
+import { getPageTextTerms } from "../core/pageText.js";
 import { clickVisibleButtonByText, findVisibleButtonByText } from "./xaiHelpers.js";
 
 const logger = createLogger("node.xai-account");
-const EXISTING_EMAIL_SIGN_IN_BUTTON_KEYWORDS = [
-  "使用邮箱登录",
-  "sign in with email",
-  "log in with email",
-  "continue with email"
-];
+const EXISTING_EMAIL_SIGN_IN_BUTTON_KEYWORDS = getPageTextTerms("xaiEmailSignIn");
 const SIGN_IN_NAVIGATION_TIMEOUT_MS = 15000;
 
 export class XAiWaitRegistrationCompleteNode extends RegisterNode {

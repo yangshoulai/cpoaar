@@ -1,17 +1,10 @@
 import { RegisterNode, NodeResult } from "../core/flow.js";
 import { sleep, waitForAnyCondition } from "../core/browser.js";
 import { createLogger } from "../core/logger.js";
+import { containsPageText, getPageTextTerms } from "../core/pageText.js";
 
 const logger = createLogger("node.add-phone");
 const WHATSAPP_DEFAULT_NOTICE_WAIT_MS = 1500;
-
-const RETRYABLE_PHONE_ERRORS = [
-  "电话号码已被使用",
-  "电话号码无效",
-  "请继续通过 WhatsApp 发送验证码",
-  "通过 WhatsApp 向该号码发送一次性验证码",
-  "此电话号码已关联到可关联的最多账户"
-];
 
 export class AddPhoneNumberNode extends RegisterNode {
   static name = "add_phone_number";
@@ -36,7 +29,7 @@ export class AddPhoneNumberNode extends RegisterNode {
       if (
         result.status === "phone_submit_error"
         && result.error
-        && RETRYABLE_PHONE_ERRORS.some((text) => result.error.includes(text))
+        && containsPageText(result.error, "phoneRetryableError")
         && retryCount < maxAttempts
       ) {
         retryCount += 1;
@@ -188,14 +181,7 @@ async function waitForWhatsAppDefaultNotice(ctx) {
 }
 
 async function detectWhatsAppDefaultNotice(ctx) {
-  return ctx.tabs.execute(() => {
-    const keywords = [
-      "我们会通过 whatsapp 向该号码发送一次性验证码进行验证",
-      "通过 whatsapp 向该号码发送一次性验证码",
-      "whatsapp 向该号码发送一次性验证码",
-      "send a one-time code to this number via whatsapp",
-      "send a one-time code via whatsapp"
-    ];
+  return ctx.tabs.execute((keywords) => {
     const visibleText = String(document.body?.innerText || "")
       .replace(/\s+/g, " ")
       .trim();
@@ -219,7 +205,7 @@ async function detectWhatsAppDefaultNotice(ctx) {
       const end = Math.min(text.length, index + keyword.length + 120);
       return text.slice(start, end).trim();
     }
-  });
+  }, [getPageTextTerms("whatsAppCodeNotice").map((term) => term.toLowerCase())]);
 }
 
 function takePendingMobile(ctx) {

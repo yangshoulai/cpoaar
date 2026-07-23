@@ -1,3 +1,5 @@
+import { getPageTextTerms } from "../core/pageText.js";
+
 export const XAI_SIGN_UP_URL = "https://accounts.x.ai/sign-up";
 export const XAI_SIGN_IN_URL = "https://accounts.x.ai/sign-in?email=true";
 export const XAI_CALLBACK_URL_PREFIX = "http://127.0.0.1:56121/callback";
@@ -17,11 +19,13 @@ export function buildXAiRedirectUrl(code, state = "") {
   return url.toString();
 }
 
-export async function findVisibleButtonByText(ctx, keywords) {
-  return ctx.tabs.execute((inputKeywords) => {
+export async function findVisibleButtonByText(ctx, keywords, { excludeKeywords = [] } = {}) {
+  return ctx.tabs.execute((inputKeywords, inputExcludeKeywords) => {
     const normalizedKeywords = inputKeywords.map((item) => String(item || "").toLowerCase());
+    const normalizedExcludeKeywords = inputExcludeKeywords.map((item) => String(item || "").toLowerCase());
     const button = findBestButton({
       keywords: normalizedKeywords,
+      excludeKeywords: normalizedExcludeKeywords,
       clickableOnly: false
     });
     return button ? describeButton(button) : null;
@@ -39,14 +43,14 @@ export async function findVisibleButtonByText(ctx, keywords) {
       };
     }
 
-    function findBestButton({ keywords, clickableOnly }) {
+    function findBestButton({ keywords, excludeKeywords, clickableOnly }) {
       return Array.from(document.querySelectorAll("button, input[type='button'], input[type='submit']"))
-        .map((item) => ({ item, score: scoreButton(item, keywords, clickableOnly) }))
+        .map((item) => ({ item, score: scoreButton(item, keywords, excludeKeywords, clickableOnly) }))
         .filter((entry) => entry.score > 0)
         .sort((left, right) => right.score - left.score)[0]?.item || null;
     }
 
-    function scoreButton(element, keywords, clickableOnly) {
+    function scoreButton(element, keywords, excludeKeywords, clickableOnly) {
       if (clickableOnly ? !isClickable(element) : !isVisible(element)) {
         return 0;
       }
@@ -54,7 +58,7 @@ export async function findVisibleButtonByText(ctx, keywords) {
       if (!text || !keywords.some((keyword) => keyword && text.includes(keyword))) {
         return 0;
       }
-      if (isAllowSearch(keywords) && isNegativeAllowText(text)) {
+      if (excludeKeywords.some((keyword) => keyword && text.includes(keyword))) {
         return 0;
       }
       let score = 10;
@@ -80,25 +84,6 @@ export async function findVisibleButtonByText(ctx, keywords) {
       return String(element.textContent || element.getAttribute("aria-label") || "").trim();
     }
 
-    function isAllowSearch(keywords) {
-      return keywords.some((keyword) => ["允许", "allow", "authorize", "approve"].includes(keyword));
-    }
-
-    function isNegativeAllowText(text) {
-      return [
-        "不允许",
-        "拒绝",
-        "取消",
-        "don't allow",
-        "do not allow",
-        "deny",
-        "decline",
-        "reject",
-        "cancel",
-        "not now"
-      ].some((keyword) => text.includes(keyword));
-    }
-
     function isClickable(element) {
       return isVisible(element)
         && !element.disabled
@@ -111,14 +96,16 @@ export async function findVisibleButtonByText(ctx, keywords) {
         && style.display !== "none"
         && element.getClientRects().length > 0;
     }
-  }, [keywords]);
+  }, [keywords, excludeKeywords]);
 }
 
-export async function clickVisibleButtonByText(ctx, keywords) {
-  return ctx.tabs.execute((inputKeywords) => {
+export async function clickVisibleButtonByText(ctx, keywords, { excludeKeywords = [] } = {}) {
+  return ctx.tabs.execute((inputKeywords, inputExcludeKeywords) => {
     const normalizedKeywords = inputKeywords.map((item) => String(item || "").toLowerCase());
+    const normalizedExcludeKeywords = inputExcludeKeywords.map((item) => String(item || "").toLowerCase());
     const button = findBestButton({
       keywords: normalizedKeywords,
+      excludeKeywords: normalizedExcludeKeywords,
       clickableOnly: true
     });
     if (!button) {
@@ -138,14 +125,14 @@ export async function clickVisibleButtonByText(ctx, keywords) {
       }
     };
 
-    function findBestButton({ keywords, clickableOnly }) {
+    function findBestButton({ keywords, excludeKeywords, clickableOnly }) {
       return Array.from(document.querySelectorAll("button, input[type='button'], input[type='submit']"))
-        .map((item) => ({ item, score: scoreButton(item, keywords, clickableOnly) }))
+        .map((item) => ({ item, score: scoreButton(item, keywords, excludeKeywords, clickableOnly) }))
         .filter((entry) => entry.score > 0)
         .sort((left, right) => right.score - left.score)[0]?.item || null;
     }
 
-    function scoreButton(element, keywords, clickableOnly) {
+    function scoreButton(element, keywords, excludeKeywords, clickableOnly) {
       if (clickableOnly ? !isClickable(element) : !isVisible(element)) {
         return 0;
       }
@@ -153,7 +140,7 @@ export async function clickVisibleButtonByText(ctx, keywords) {
       if (!text || !keywords.some((keyword) => keyword && text.includes(keyword))) {
         return 0;
       }
-      if (isAllowSearch(keywords) && isNegativeAllowText(text)) {
+      if (excludeKeywords.some((keyword) => keyword && text.includes(keyword))) {
         return 0;
       }
       let score = 10;
@@ -179,25 +166,6 @@ export async function clickVisibleButtonByText(ctx, keywords) {
       return String(element.textContent || element.getAttribute("aria-label") || "").trim();
     }
 
-    function isAllowSearch(keywords) {
-      return keywords.some((keyword) => ["允许", "allow", "authorize", "approve"].includes(keyword));
-    }
-
-    function isNegativeAllowText(text) {
-      return [
-        "不允许",
-        "拒绝",
-        "取消",
-        "don't allow",
-        "do not allow",
-        "deny",
-        "decline",
-        "reject",
-        "cancel",
-        "not now"
-      ].some((keyword) => text.includes(keyword));
-    }
-
     function isClickable(element) {
       const style = window.getComputedStyle(element);
       return style.visibility !== "hidden"
@@ -206,7 +174,19 @@ export async function clickVisibleButtonByText(ctx, keywords) {
         && !element.disabled
         && element.getAttribute("aria-disabled") !== "true";
     }
-  }, [keywords]);
+  }, [keywords, excludeKeywords]);
+}
+
+export function findVisibleConsentAllowButton(ctx) {
+  return findVisibleButtonByText(ctx, getPageTextTerms("consentAllow"), {
+    excludeKeywords: getPageTextTerms("consentDeny")
+  });
+}
+
+export function clickVisibleConsentAllowButton(ctx) {
+  return clickVisibleButtonByText(ctx, getPageTextTerms("consentAllow"), {
+    excludeKeywords: getPageTextTerms("consentDeny")
+  });
 }
 
 export async function getReadonlyAuthorizationCode(ctx) {
