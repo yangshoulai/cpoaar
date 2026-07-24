@@ -1,4 +1,4 @@
-import { RegisterNode, NodeResult } from "../core/flow.js";
+import { RegisterNode, NodeResult, buildFlowStoppedResult } from "../core/flow.js";
 import { sleep, waitForAnyCondition } from "../core/browser.js";
 import { createLogger } from "../core/logger.js";
 import { appendRegisterHistory } from "../core/storage.js";
@@ -91,9 +91,13 @@ export class XAiSubmitConsentNode extends RegisterNode {
     try {
       patchResult = await ctx.services.accountManagementService.patchXAiAuthFile({
         emailAddress: ctx.state.account?.emailAddress || "",
-        minLastRefreshAt: getRequiredMinLastRefreshAt(ctx, allowSubmittedAt)
+        minLastRefreshAt: getRequiredMinLastRefreshAt(ctx, allowSubmittedAt),
+        signal: ctx.signal
       });
     } catch (error) {
+      if (ctx.signal?.aborted || error.name === "AbortError") {
+        return buildFlowStoppedResult();
+      }
       return NodeResult.fail("xai_account_export_failed", `CPA xAI device 认证文件修补失败：${formatServiceError(error)}`, {
         xaiOauthUrl: ctx.state.xaiOauthUrl || null,
         xaiOauthDeviceUserCode: resolveDeviceUserCode(ctx.state.xaiOauthUrl),
@@ -207,7 +211,8 @@ export class XAiSubmitConsentNode extends RegisterNode {
     const submitResult = await ctx.services.accountManagementService.submitRedirectUrl(redirectUrl, {
       accountType: ACCOUNT_TYPES.xai,
       emailAddress: ctx.state.account?.emailAddress || "",
-      minLastRefreshAt: getRequiredMinLastRefreshAt(ctx, allowSubmittedAt)
+      minLastRefreshAt: getRequiredMinLastRefreshAt(ctx, allowSubmittedAt),
+      signal: ctx.signal
     });
     if (!submitResult.success) {
       return NodeResult.fail("xai_account_export_failed", submitResult.error || `xAI 账号导出失败: ${submitResult.status}`, {

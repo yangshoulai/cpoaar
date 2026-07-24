@@ -55,7 +55,8 @@ export class CpaAccountService {
       redirect_url: redirectUrl
     }, {
       headers: this._headers(),
-      credentials: "omit"
+      credentials: "omit",
+      signal: options.signal
     });
     const result = {
       success: payload?.status === "ok",
@@ -70,13 +71,17 @@ export class CpaAccountService {
     try {
       const patchResult = await this.patchXAiAuthFile({
         emailAddress: options.emailAddress || options.email || "",
-        minLastRefreshAt: options.minLastRefreshAt || ""
+        minLastRefreshAt: options.minLastRefreshAt || "",
+        signal: options.signal
       });
       return {
         ...result,
         xaiAuthFilePatchResult: patchResult
       };
     } catch (error) {
+      if (options.signal?.aborted || error.name === "AbortError") {
+        throw error;
+      }
       logger.warn("修补 CPA xAI 认证文件失败", {
         error: formatServiceError(error),
         email: options.emailAddress || options.email || ""
@@ -95,7 +100,7 @@ export class CpaAccountService {
     }
   }
 
-  async patchXAiAuthFile({ emailAddress, minLastRefreshAt = "" } = {}) {
+  async patchXAiAuthFile({ emailAddress, minLastRefreshAt = "", signal = null } = {}) {
     const fileName = buildXAiAuthFileName(emailAddress);
     const downloadUrl = joinUrl(this.config.baseUrl, "auth-files/download");
     logger.info("下载 CPA xAI 认证文件", {
@@ -103,7 +108,7 @@ export class CpaAccountService {
       fileName,
       minLastRefreshAt
     });
-    const authFile = await this.downloadAuthFile(downloadUrl, fileName, { minLastRefreshAt });
+    const authFile = await this.downloadAuthFile(downloadUrl, fileName, { minLastRefreshAt, signal });
     const patchedAuthFile = patchXAiAuthFileContent(authFile);
     const uploadUrl = joinUrl(this.config.baseUrl, "auth-files");
     logger.info("上传 CPA xAI 认证文件", {
@@ -112,7 +117,7 @@ export class CpaAccountService {
       baseUrl: patchedAuthFile.base_url,
       headerKeys: Object.keys(patchedAuthFile.headers || {})
     });
-    const uploadPayload = await this.uploadAuthFile(uploadUrl, fileName, patchedAuthFile);
+    const uploadPayload = await this.uploadAuthFile(uploadUrl, fileName, patchedAuthFile, { signal });
     const success = uploadPayload == null
       || uploadPayload?.success === true
       || uploadPayload?.status === "ok";
@@ -132,7 +137,9 @@ export class CpaAccountService {
 
   async downloadAuthFile(url, fileName, options = {}) {
     const minLastRefreshAt = normalizeDateToSecond(options.minLastRefreshAt);
+    const signal = options.signal || null;
     for (let attempt = 1; attempt <= XAI_AUTH_FILE_DOWNLOAD_MAX_ATTEMPTS; attempt += 1) {
+      throwIfAborted(signal);
       try {
         logger.info("查询 CPA xAI 认证文件", {
           fileName,
@@ -145,7 +152,8 @@ export class CpaAccountService {
           headers: this._bearerHeaders(),
           credentials: "omit",
           cache: "no-store",
-          responseType: "text"
+          responseType: "text",
+          signal
         });
         const authFile = parseRequiredJson(text, `CPA xAI 认证文件 ${fileName}`);
         if (minLastRefreshAt && !isAuthFileFreshEnough(authFile, minLastRefreshAt)) {
@@ -161,11 +169,12 @@ export class CpaAccountService {
           if (!shouldRetry) {
             throw new Error(`CPA xAI 认证文件 last_refresh 早于本次授权: last_refresh=${authFile?.last_refresh || ""}, min=${minLastRefreshAt}`);
           }
-          await delay(XAI_AUTH_FILE_DOWNLOAD_RETRY_INTERVAL_MS);
+          await delay(XAI_AUTH_FILE_DOWNLOAD_RETRY_INTERVAL_MS, signal);
           continue;
         }
         return authFile;
       } catch (error) {
+        throwIfAborted(signal);
         const shouldRetry = isHttpStatus(error, 404) && attempt < XAI_AUTH_FILE_DOWNLOAD_MAX_ATTEMPTS;
         if (!shouldRetry) {
           throw error;
@@ -178,18 +187,19 @@ export class CpaAccountService {
           status: error.status || 0,
           body: truncateText(error.body || "", 300)
         });
-        await delay(XAI_AUTH_FILE_DOWNLOAD_RETRY_INTERVAL_MS);
+        await delay(XAI_AUTH_FILE_DOWNLOAD_RETRY_INTERVAL_MS, signal);
       }
     }
     throw new Error(`CPA xAI 认证文件下载失败: ${fileName}`);
   }
 
-  async uploadAuthFile(url, fileName, authFile) {
+  async uploadAuthFile(url, fileName, authFile, options = {}) {
     const text = await this.http.post(url, authFile, {
       query: { name: fileName },
       headers: this._bearerHeaders(),
       credentials: "omit",
-      responseType: "text"
+      responseType: "text",
+      signal: options.signal
     });
     return parseOptionalJson(text);
   }
@@ -391,8 +401,35 @@ function isHttpStatus(error, status) {
   return Number(error?.status || 0) === status;
 }
 
-function delay(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function delay(ms, signal = null) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(buildAbortError());
+      return;
+    }
+    const timeoutId = setTimeout(() => {
+      signal?.removeEventListener?.("abort", onAbort);
+      resolve();
+    }, ms);
+    function onAbort() {
+      clearTimeout(timeoutId);
+      signal?.removeEventListener?.("abort", onAbort);
+      reject(buildAbortError());
+    }
+    signal?.addEventListener?.("abort", onAbort, { once: true });
+  });
+}
+
+function throwIfAborted(signal) {
+  if (signal?.aborted) {
+    throw buildAbortError();
+  }
+}
+
+function buildAbortError() {
+  const error = new Error("流程已停止");
+  error.name = "AbortError";
+  return error;
 }
 
 function truncateText(value, maxLength) {

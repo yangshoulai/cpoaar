@@ -53,7 +53,7 @@ export class SubmitCodexConsentNode extends RegisterNode {
       await ctx.services.emailService.callback(ctx.state.emailAccount, true);
     }
     if (isOpenAiRegisterMode(ctx.config.register?.mode)) {
-      await appendRegisterHistory({
+      const historyRecord = await appendRegisterHistory({
         accountType: ACCOUNT_TYPES.openai,
         flowMode: RUN_MODES.openaiRegister,
         registerFlow: ctx.state.openAiRegisterFlow || ctx.config.register?.openAiRegisterFlow || "",
@@ -74,6 +74,17 @@ export class SubmitCodexConsentNode extends RegisterNode {
         codexOauthRedirectUrl: redirectUrl,
         accountExportStatus: submitResult.status,
         accountExportResult: submitResult.attributes || {}
+      });
+      logger.info("OpenAI 注册历史记录已保存", {
+        id: historyRecord.id,
+        email: historyRecord.emailAddress || "",
+        flowMode: historyRecord.flowMode || "",
+        accountType: historyRecord.accountType || ""
+      });
+    } else {
+      logger.info("当前不是 OpenAI 注册模式，跳过历史记录保存", {
+        mode: ctx.config.register?.mode || "",
+        email: ctx.state.account?.emailAddress || ""
       });
     }
     logger.info("账号导出完成", {
