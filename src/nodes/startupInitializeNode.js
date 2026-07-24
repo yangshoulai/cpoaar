@@ -23,10 +23,14 @@ export class StartupInitializeNode extends RegisterNode {
       logger.info("启动初始化：日志已清理");
     }
     if (isXAiMode(ctx.config.register?.mode)) {
-      logger.info("xAI 模式：清理 x.ai Cookie 并关闭相关标签页");
+      logger.info("xAI 模式：清理 x.ai Cookie 并关闭相关标签页", {
+        mode: ctx.config.register?.mode || ""
+      });
       await ctx.tabs.resetXAiSession();
     } else {
-      logger.info("清理 OpenAI/ChatGPT Cookie 并关闭相关标签页");
+      logger.info("清理 OpenAI/ChatGPT Cookie 并关闭相关标签页", {
+        mode: ctx.config.register?.mode || ""
+      });
       await ctx.tabs.resetOpenAiSession();
     }
     logger.info("启动初始化：预初始化 OutlookMail 会话");

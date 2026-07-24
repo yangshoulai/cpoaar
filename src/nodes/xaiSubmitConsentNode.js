@@ -4,6 +4,7 @@ import { createLogger } from "../core/logger.js";
 import { appendRegisterHistory } from "../core/storage.js";
 import { ACCOUNT_TYPES, RUN_MODES, isXAiRegisterMode, isXAiReauthorizeMode } from "../core/runModes.js";
 import { getPageTextTerms } from "../core/pageText.js";
+import { XAI_OAUTH_AUTH_MODES, isLocalXAiOauthAuthMode, normalizeXAiOauthAuthMode } from "../core/xaiOauthAuthModes.js";
 import {
   buildXAiRedirectUrl,
   clickVisibleConsentAllowButton,
@@ -12,11 +13,13 @@ import {
 } from "./xaiHelpers.js";
 
 const logger = createLogger("node.xai-consent");
+const XAI_LOCAL_OAUTH_TOKEN_MAX_RETRIES = 3;
 
 export class XAiSubmitConsentNode extends RegisterNode {
   static name = "xai_submit_consent";
   static statuses = {
-    success: "xai_account_exported"
+    success: "xai_account_exported",
+    retryLocalOauth: "xai_local_oauth_retry"
   };
 
   constructor() {
@@ -24,10 +27,144 @@ export class XAiSubmitConsentNode extends RegisterNode {
   }
 
   async execute(ctx) {
+    if (isLocalXAiOauthFlow(ctx)) {
+      return this.executeLocalDeviceOauth(ctx);
+    }
     if (isDeviceOauthFlow(ctx)) {
       return this.executeDeviceOauth(ctx);
     }
     return this.executeAuthorizationCodeOauth(ctx);
+  }
+
+  async executeLocalDeviceOauth(ctx) {
+    const localOauth = ctx.state.xaiLocalOauth || null;
+    if (!localOauth?.deviceCode || !localOauth?.tokenEndpoint) {
+      return NodeResult.fail("xai_local_oauth_context_missing", "xAI 本地认证缺少 device_code/token_endpoint，请从刷新 OAuth 节点重新开始", {
+        xaiOauthUrl: ctx.state.xaiOauthUrl || null
+      });
+    }
+
+    const approvalResult = await waitAndApproveLocalDeviceConsent(ctx);
+    if (!approvalResult.ok) {
+      if (approvalResult.retryable && getLocalOauthRetryCount(ctx) < XAI_LOCAL_OAUTH_TOKEN_MAX_RETRIES) {
+        const retryCount = getLocalOauthRetryCount(ctx) + 1;
+        logger.warn("xAI 本地 OAuth 授权未成功，将重新申请 device code", {
+          retryCount,
+          maxRetryCount: XAI_LOCAL_OAUTH_TOKEN_MAX_RETRIES,
+          status: approvalResult.status,
+          error: approvalResult.error
+        });
+        return NodeResult.ok(XAiSubmitConsentNode.statuses.retryLocalOauth, {
+          xaiLocalOauthRetryCount: retryCount,
+          xaiLocalOauth: null,
+          xaiOauthUrl: null,
+          xaiOauthDeviceUserCode: "",
+          xaiOauthAllowSubmittedAt: ""
+        });
+      }
+      return NodeResult.fail(approvalResult.status, approvalResult.error, {
+        xaiOauthUrl: ctx.state.xaiOauthUrl || null,
+        xaiOauthDeviceUserCode: resolveDeviceUserCode(ctx.state.xaiOauthUrl)
+      });
+    }
+    const allowSubmittedAt = approvalResult.allowSubmittedAt;
+    ctx.state.xaiOauthAllowSubmittedAt = allowSubmittedAt;
+
+    let tokenPayload;
+    try {
+      tokenPayload = await ctx.services.xaiLocalOAuthService.pollToken(localOauth, {
+        signal: ctx.signal
+      });
+    } catch (error) {
+      if (ctx.signal?.aborted || error.name === "AbortError") {
+        return buildFlowStoppedResult();
+      }
+      if (shouldRetryLocalOauth(ctx, error)) {
+        const retryCount = getLocalOauthRetryCount(ctx) + 1;
+        logger.warn("xAI 本地 OAuth token 获取失败，将重新申请 device code", {
+          retryCount,
+          maxRetryCount: XAI_LOCAL_OAUTH_TOKEN_MAX_RETRIES,
+          code: error.code || "",
+          status: error.status || 0,
+          error: formatServiceError(error)
+        });
+        return NodeResult.ok(XAiSubmitConsentNode.statuses.retryLocalOauth, {
+          xaiLocalOauthRetryCount: retryCount,
+          xaiLocalOauth: null,
+          xaiOauthUrl: null,
+          xaiOauthDeviceUserCode: "",
+          xaiOauthAllowSubmittedAt: ""
+        });
+      }
+      return NodeResult.fail("xai_local_oauth_token_failed", `xAI 本地 OAuth token 获取失败：${formatServiceError(error)}`, {
+        xaiOauthUrl: ctx.state.xaiOauthUrl || null,
+        xaiOauthDeviceUserCode: resolveDeviceUserCode(ctx.state.xaiOauthUrl),
+        tokenError: {
+          code: error.code || "",
+          status: error.status || 0,
+          retryable: Boolean(error.retryable)
+        }
+      });
+    }
+
+    const authFile = ctx.services.xaiLocalOAuthService.buildAuthFile(tokenPayload, {
+      emailAddress: ctx.state.account?.emailAddress || "",
+      tokenEndpoint: localOauth.tokenEndpoint
+    });
+
+    let uploadResult;
+    try {
+      uploadResult = await ctx.services.accountManagementService.uploadXAiAuthFile({
+        emailAddress: ctx.state.account?.emailAddress || "",
+        authFile,
+        signal: ctx.signal
+      });
+    } catch (error) {
+      if (ctx.signal?.aborted || error.name === "AbortError") {
+        return buildFlowStoppedResult();
+      }
+      return NodeResult.fail("xai_account_export_failed", `CPA xAI 本地认证文件上传失败：${formatServiceError(error)}`, {
+        xaiOauthUrl: ctx.state.xaiOauthUrl || null,
+        xaiOauthDeviceUserCode: resolveDeviceUserCode(ctx.state.xaiOauthUrl),
+        xaiAuthFileUploadResult: {
+          success: false,
+          error: formatServiceError(error)
+        }
+      });
+    }
+
+    const submitResult = {
+      success: true,
+      status: "xai_local_auth_file_uploaded",
+      error: "",
+      attributes: uploadResult.attributes || {},
+      xaiAuthFileUploadResult: uploadResult,
+      xaiAuthFilePatchResult: uploadResult
+    };
+    await finalizeXAiAccountExport(ctx, {
+      authorizationCode: "",
+      oauthState: "",
+      redirectUrl: "",
+      oauthFlow: "device",
+      oauthAuthMode: XAI_OAUTH_AUTH_MODES.local,
+      deviceUserCode: resolveDeviceUserCode(ctx.state.xaiOauthUrl),
+      submitResult
+    });
+
+    logger.info("xAI 本地 OAuth 账号导出完成", {
+      email: ctx.state.account?.emailAddress,
+      fileName: uploadResult.fileName || "",
+      userCode: resolveDeviceUserCode(ctx.state.xaiOauthUrl),
+      lastRefresh: authFile.last_refresh
+    });
+    return NodeResult.ok(XAiSubmitConsentNode.statuses.success, {
+      xaiOauthFlow: "device",
+      xaiOauthAuthMode: XAI_OAUTH_AUTH_MODES.local,
+      xaiOauthDeviceUserCode: resolveDeviceUserCode(ctx.state.xaiOauthUrl),
+      xaiOauthAllowSubmittedAt: allowSubmittedAt,
+      xaiAuthFileUploadResult: uploadResult,
+      accountExportSubmitResult: submitResult
+    });
   }
 
   async executeDeviceOauth(ctx) {
@@ -58,7 +195,7 @@ export class XAiSubmitConsentNode extends RegisterNode {
       return NodeResult.fail("stopped", "流程已停止");
     }
 
-    const deleteResult = await deleteExistingXAiAuthFile(ctx);
+    const deleteResult = await prepareExistingXAiAuthFileForAccountServicePatch(ctx);
     if (!deleteResult.ok) {
       return NodeResult.fail("xai_auth_file_delete_failed", deleteResult.error, {
         xaiOauthUrl: ctx.state.xaiOauthUrl || null,
@@ -200,7 +337,7 @@ export class XAiSubmitConsentNode extends RegisterNode {
       });
     }
     const redirectUrl = buildXAiRedirectUrl(authorizationCode, oauthState);
-    const deleteResult = await deleteExistingXAiAuthFile(ctx);
+    const deleteResult = await prepareExistingXAiAuthFileForAccountServicePatch(ctx);
     if (!deleteResult.ok) {
       return NodeResult.fail("xai_auth_file_delete_failed", deleteResult.error, {
         xaiOauthRedirectUrl: redirectUrl,
@@ -246,6 +383,139 @@ export class XAiSubmitConsentNode extends RegisterNode {
       accountExportSubmitResult: submitResult
     });
   }
+}
+
+async function waitAndApproveLocalDeviceConsent(ctx) {
+  const consentReady = await waitForAnyCondition([
+    {
+      name: "device_done_url",
+      check: () => ctx.tabs.urlContains("/oauth2/device/done")
+    },
+    {
+      name: "device_consent_url",
+      check: () => ctx.tabs.urlContains("/oauth2/device/consent")
+    },
+    {
+      name: "allow_button",
+      check: () => findVisibleConsentAllowButton(ctx)
+    }
+  ], {
+    timeoutMs: 30000,
+    label: "xAI 本地 device OAuth consent 或 done 页面",
+    signal: ctx.signal
+  });
+  if (!consentReady.matched) {
+    return {
+      ok: false,
+      status: "xai_oauth_consent_missing",
+      error: `未找到 xAI 本地 device OAuth consent 或完成页: ${await ctx.tabs.getCurrentUrl()}`
+    };
+  }
+  if (consentReady.name === "device_done_url") {
+    return {
+      ok: true,
+      allowSubmittedAt: ctx.state.xaiOauthAllowSubmittedAt || new Date().toISOString(),
+      alreadyDone: true
+    };
+  }
+
+  const allowReady = await waitForAnyCondition([
+    {
+      name: "allow_button",
+      check: () => findVisibleConsentAllowButton(ctx)
+    }
+  ], {
+    timeoutMs: 30000,
+    label: "xAI 本地 device OAuth 允许按钮",
+    signal: ctx.signal
+  });
+  if (!allowReady.matched) {
+    return {
+      ok: false,
+      status: "xai_oauth_consent_missing",
+      error: `xAI 本地 device OAuth consent 页面未出现允许按钮: ${await ctx.tabs.getCurrentUrl()}`
+    };
+  }
+
+  logger.info("xAI 本地 device consent 已就绪，提交前等待页面稳定", {
+    waitMs: 2000,
+    currentUrl: await ctx.tabs.getCurrentUrl()
+  });
+  await sleep(2000, ctx.signal);
+  if (ctx.signal?.aborted) {
+    return {
+      ok: false,
+      status: "stopped",
+      error: "流程已停止"
+    };
+  }
+
+  const clickResult = await approveDeviceConsent(ctx);
+  if (!clickResult.ok) {
+    return {
+      ok: false,
+      status: "xai_oauth_allow_failed",
+      error: "未能点击 xAI 本地 device OAuth 允许按钮"
+    };
+  }
+  logger.info("xAI 本地 device OAuth 允许表单已提交", {
+    actionValue: clickResult.actionValue || "",
+    actionSource: clickResult.actionSource || "",
+    payload: clickResult.payload || null,
+    form: clickResult.form || null,
+    button: clickResult.button || null
+  });
+  const allowSubmittedAt = new Date().toISOString();
+
+  const doneResult = await waitForAnyCondition([
+    {
+      name: "device_done_url",
+      check: () => ctx.tabs.urlContains("/oauth2/device/done")
+    }
+  ], {
+    timeoutMs: 30000,
+    label: "xAI 本地 device OAuth done 页面",
+    signal: ctx.signal
+  });
+  if (!doneResult.matched) {
+    return {
+      ok: false,
+      status: "xai_oauth_device_done_missing",
+      error: `点击 xAI 本地 device 允许后未进入完成页: ${await ctx.tabs.getCurrentUrl()}`
+    };
+  }
+  const doneStatus = await inspectDeviceDonePage(ctx);
+  logger.info("xAI 本地 device OAuth done 页面状态", doneStatus);
+  if (doneStatus.state === "denied") {
+    return {
+      ok: false,
+      retryable: true,
+      status: "xai_local_oauth_denied",
+      error: `xAI 本地 device OAuth done 页面显示授权被拒绝: ${doneStatus.preview || await ctx.tabs.getCurrentUrl()}`
+    };
+  }
+  return {
+    ok: true,
+    allowSubmittedAt,
+    alreadyDone: false
+  };
+}
+
+async function prepareExistingXAiAuthFileForAccountServicePatch(ctx) {
+  if (isXAiReauthorizeMode(ctx.config.register?.mode)) {
+    logger.info("xAI 授权模式跳过删除已有 CPA xAI 认证文件，将按 last_refresh 等待本次授权生成的新文件", {
+      email: ctx.state.account?.emailAddress || ""
+    });
+    return {
+      ok: true,
+      data: {
+        deleted: false,
+        skipped: true,
+        reason: "xai_reauthorize_keep_existing_auth_file"
+      }
+    };
+  }
+  return deleteExistingXAiAuthFile(ctx);
 }
 
 async function deleteExistingXAiAuthFile(ctx) {
@@ -304,6 +574,42 @@ async function deleteExistingXAiAuthFile(ctx) {
       }
     };
   }
+}
+
+async function inspectDeviceDonePage(ctx) {
+  return ctx.tabs.execute(() => {
+    const text = String(document.body?.innerText || document.body?.textContent || "")
+      .normalize("NFKC")
+      .replace(/\s+/g, " ")
+      .trim();
+    const normalized = text.toLowerCase();
+    const denied = [
+      "access denied",
+      "denied",
+      "declined",
+      "rejected",
+      "not authorized",
+      "authorization denied",
+      "拒绝",
+      "未授权",
+      "不同意",
+      "不允许"
+    ].some((term) => normalized.includes(term));
+    const authorized = [
+      "device authorized",
+      "you have authorized",
+      "device is authorized",
+      "authorized",
+      "设备已授权",
+      "授权成功",
+      "已授权"
+    ].some((term) => normalized.includes(term));
+    return {
+      state: denied ? "denied" : authorized ? "authorized" : "unknown",
+      url: window.location.href,
+      preview: text.slice(0, 180)
+    };
+  });
 }
 
 async function approveDeviceConsent(ctx) {
@@ -480,6 +786,7 @@ async function finalizeXAiAccountExport(ctx, {
   oauthState,
   redirectUrl,
   oauthFlow,
+  oauthAuthMode,
   deviceUserCode,
   submitResult
 }) {
@@ -505,13 +812,15 @@ async function finalizeXAiAccountExport(ctx, {
       emailVerificationCode: ctx.state.account?.emailVerificationCode || "",
       smsVerificationCode: "",
       xaiOauthFlow: oauthFlow || "",
+      xaiOauthAuthMode: normalizeXAiOauthAuthMode(oauthAuthMode || ctx.state.xaiOauthAuthMode),
       xaiOauthDeviceUserCode: deviceUserCode || "",
       xaiAuthorizationCode: authorizationCode || "",
       xaiOauthState: oauthState || "",
       xaiOauthRedirectUrl: redirectUrl || "",
       accountExportStatus: submitResult.status,
       accountExportResult: submitResult.attributes || {},
-      xaiAuthFilePatchResult: submitResult.xaiAuthFilePatchResult || null
+      xaiAuthFilePatchResult: submitResult.xaiAuthFilePatchResult || null,
+      xaiAuthFileUploadResult: submitResult.xaiAuthFileUploadResult || null
     });
   }
 }
@@ -524,6 +833,27 @@ function getRequiredMinLastRefreshAt(ctx, allowSubmittedAt) {
 
 function isDeviceOauthFlow(ctx) {
   return ctx.state?.xaiOauthFlow === "device" || isXAiDeviceOauthUrl(ctx.state?.xaiOauthUrl?.url);
+}
+
+function isLocalXAiOauthFlow(ctx) {
+  return isLocalXAiOauthAuthMode(ctx.state?.xaiOauthAuthMode || ctx.config.register?.xaiOauthAuthMode)
+    && isDeviceOauthFlow(ctx);
+}
+
+function shouldRetryLocalOauth(ctx, error) {
+  if (!isLocalXAiOauthFlow(ctx)) {
+    return false;
+  }
+  if (getLocalOauthRetryCount(ctx) >= XAI_LOCAL_OAUTH_TOKEN_MAX_RETRIES) {
+    return false;
+  }
+  return Boolean(error?.retryable)
+    || ["invalid_grant", "expired_token", "token_polling_timeout"].includes(String(error?.code || ""));
+}
+
+function getLocalOauthRetryCount(ctx) {
+  const count = Math.floor(Number(ctx.state?.xaiLocalOauthRetryCount || 0));
+  return Number.isFinite(count) && count > 0 ? count : 0;
 }
 
 function isXAiDeviceOauthUrl(value) {

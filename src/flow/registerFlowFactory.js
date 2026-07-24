@@ -251,6 +251,9 @@ function buildXAiRegisterFlow() {
       ],
       [XAiRefreshOAuthAndLoginNode.name]: [
         { status: XAiRefreshOAuthAndLoginNode.statuses.consent, target: XAiSubmitConsentNode.name }
+      ],
+      [XAiSubmitConsentNode.name]: [
+        { status: XAiSubmitConsentNode.statuses.retryLocalOauth, target: XAiRefreshOAuthAndLoginNode.name }
       ]
     }
   });
@@ -275,6 +278,9 @@ function buildXAiReauthorizeFlow() {
       ],
       [XAiRefreshOAuthAndLoginNode.name]: [
         { status: XAiRefreshOAuthAndLoginNode.statuses.consent, target: XAiSubmitConsentNode.name }
+      ],
+      [XAiSubmitConsentNode.name]: [
+        { status: XAiSubmitConsentNode.statuses.retryLocalOauth, target: XAiRefreshOAuthAndLoginNode.name }
       ]
     }
   });

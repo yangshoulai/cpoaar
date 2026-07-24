@@ -4,6 +4,7 @@ import { getAccountTypeByMode } from "../core/runModes.js";
 import { createAccount } from "../core/account.js";
 import { SmsActivationStore } from "./smsActivationStore.js";
 import { CpaAccountService } from "./cpaAccountService.js";
+import { XAiLocalOAuthService } from "./xaiLocalOAuthService.js";
 import { OutlookMailEmailService } from "./outlookMailService.js";
 import { HeroSmsService } from "./heroSmsService.js";
 import { SmsBowerService } from "./smsBowerService.js";
@@ -37,6 +38,7 @@ export function createServices(config) {
     ),
     accountManagementService,
     accountExportService: accountManagementService,
+    xaiLocalOAuthService: new XAiLocalOAuthService(httpClient),
     smsService: smsProvider
       ? createSmsService(smsProvider, smsConfig, httpClient, activationStore, activationStoreConfig)
       : null

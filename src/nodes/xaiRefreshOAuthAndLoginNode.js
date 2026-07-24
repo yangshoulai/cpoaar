@@ -3,6 +3,7 @@ import { sleep, waitForAnyCondition } from "../core/browser.js";
 import { createLogger } from "../core/logger.js";
 import { ACCOUNT_TYPES } from "../core/runModes.js";
 import { getPageTextTerms } from "../core/pageText.js";
+import { XAI_OAUTH_AUTH_MODES, isLocalXAiOauthAuthMode, normalizeXAiOauthAuthMode } from "../core/xaiOauthAuthModes.js";
 import {
   findVisibleConsentAllowButton
 } from "./xaiHelpers.js";
@@ -45,6 +46,14 @@ export class XAiRefreshOAuthAndLoginNode extends RegisterNode {
   }
 
   async executeOauthAttempt(ctx, attempt) {
+    const authMode = normalizeXAiOauthAuthMode(ctx.config.register?.xaiOauthAuthMode);
+    if (isLocalXAiOauthAuthMode(authMode)) {
+      return this.executeLocalOauthAttempt(ctx, attempt);
+    }
+    return this.executeAccountServiceOauthAttempt(ctx, attempt);
+  }
+
+  async executeAccountServiceOauthAttempt(ctx, attempt) {
     let oauth;
     try {
       oauth = await ctx.services.accountManagementService.getOauthUrl({
@@ -54,104 +63,193 @@ export class XAiRefreshOAuthAndLoginNode extends RegisterNode {
       return NodeResult.fail("xai_oauth_request_failed", formatServiceError(error));
     }
     ctx.state.xaiOauthUrl = oauth;
+    ctx.state.xaiOauthAuthMode = XAI_OAUTH_AUTH_MODES.accountService;
+    ctx.state.xaiLocalOauth = null;
     logger.info("访问 xAI OAuth 链接", {
       attempt,
       maxAttempts: XAI_OAUTH_RATE_LIMIT_MAX_ATTEMPTS,
+      authMode: XAI_OAUTH_AUTH_MODES.accountService,
       oauthFlow: oauth.oauthFlow || "",
       userCode: oauth.userCode || "",
       url: oauth.url
     });
     await ctx.tabs.navigate(oauth.url);
+    return waitForOauthConsentReady(ctx, oauth, attempt);
+  }
 
-    const readyResult = await waitForAnyCondition([
+  async executeLocalOauthAttempt(ctx, attempt) {
+    const ssoCookie = await ctx.tabs.getXAiSsoCookie();
+    if (!ssoCookie?.value) {
+      return NodeResult.fail("xai_local_oauth_sso_missing", "本地认证缺少 xAI sso Cookie，请确认浏览器已登录 xAI 账号", {
+        currentUrl: await ctx.tabs.getCurrentUrl().catch(() => "")
+      });
+    }
+    const cookieInjectResult = await ctx.tabs.ensureXAiSsoCookieForAuthHosts(ssoCookie.value, ssoCookie.storeId || "");
+    logger.info("xAI 本地认证已获取 sso Cookie", {
+      domain: ssoCookie.domain || "",
+      path: ssoCookie.path || "",
+      storeId: ssoCookie.storeId || "",
+      httpOnly: Boolean(ssoCookie.httpOnly),
+      secure: Boolean(ssoCookie.secure),
+      valueLength: String(ssoCookie.value || "").length,
+      injected: cookieInjectResult.injected,
+      injectedCount: cookieInjectResult.count
+    });
+
+    let deviceAuthorization;
+    try {
+      deviceAuthorization = await ctx.services.xaiLocalOAuthService.startDeviceAuthorization({
+        signal: ctx.signal
+      });
+    } catch (error) {
+      if (ctx.signal?.aborted || error.name === "AbortError") {
+        return NodeResult.fail("stopped", "流程已停止");
+      }
+      if (Number(error?.status || 0) === 429 || error.code === "rate_limited") {
+        return NodeResult.ok("xai_oauth_rate_limited_retry", {
+          currentUrl: "",
+          attempt,
+          authMode: XAI_OAUTH_AUTH_MODES.local,
+          error: formatServiceError(error)
+        });
+      }
+      return NodeResult.fail("xai_local_oauth_start_failed", `xAI 本地 OAuth 初始化失败：${formatServiceError(error)}`);
+    }
+
+    const oauth = {
+      url: deviceAuthorization.verificationUrl,
+      state: "",
+      oauthFlow: "device",
+      userCode: deviceAuthorization.userCode,
+      local: true,
+      tokenEndpoint: deviceAuthorization.tokenEndpoint,
+      attributes: deviceAuthorization.attributes || {}
+    };
+    ctx.state.xaiOauthUrl = oauth;
+    ctx.state.xaiOauthAuthMode = XAI_OAUTH_AUTH_MODES.local;
+    ctx.state.xaiLocalOauth = deviceAuthorization;
+    logger.info("访问 xAI 本地 OAuth 认证链接", {
+      attempt,
+      maxAttempts: XAI_OAUTH_RATE_LIMIT_MAX_ATTEMPTS,
+      authMode: XAI_OAUTH_AUTH_MODES.local,
+      userCode: deviceAuthorization.userCode,
+      expiresIn: deviceAuthorization.expiresIn,
+      interval: deviceAuthorization.interval,
+      url: deviceAuthorization.verificationUrl
+    });
+    await ctx.tabs.navigate(deviceAuthorization.verificationUrl);
+    return waitForOauthConsentReady(ctx, oauth, attempt, {
+      includeDeviceDone: true
+    });
+  }
+}
+
+async function waitForOauthConsentReady(ctx, oauth, attempt, { includeDeviceDone = false } = {}) {
+  const conditions = [
+    {
+      name: "rate_limited_url",
+      check: () => getRateLimitedOauthUrl(ctx)
+    },
+    {
+      name: "consent_url",
+      check: () => ctx.tabs.urlContains("/oauth2/consent")
+    },
+    {
+      name: "device_consent_url",
+      check: () => ctx.tabs.urlContains("/oauth2/device/consent")
+    },
+    {
+      name: "device_login",
+      check: () => findDeviceLoginPage(ctx)
+    },
+    {
+      name: "allow_button",
+      check: () => findVisibleConsentAllowButton(ctx)
+    }
+  ];
+  if (includeDeviceDone) {
+    conditions.push({
+      name: "device_done_url",
+      check: () => ctx.tabs.urlContains("/oauth2/device/done")
+    });
+  }
+  const readyResult = await waitForAnyCondition(conditions, {
+    timeoutMs: 30000,
+    label: "xAI OAuth consent 或 device 页面",
+    signal: ctx.signal
+  });
+  if (!readyResult.matched) {
+    return NodeResult.fail("xai_oauth_unexpected_url", `访问 xAI OAuth 后未进入 consent 或 device 页面: ${await ctx.tabs.getCurrentUrl()}`);
+  }
+  if (readyResult.name === "rate_limited_url") {
+    return NodeResult.ok("xai_oauth_rate_limited_retry", {
+      currentUrl: readyResult.value,
+      attempt,
+      xaiOauthUrl: oauth
+    });
+  }
+
+  const isDeviceFlow = isXAiDeviceOauthUrl(oauth.url) || readyResult.name.startsWith("device_");
+  if (readyResult.name === "device_login") {
+    const continueResult = await clickDeviceLoginSubmit(ctx);
+    if (!continueResult.ok) {
+      return NodeResult.fail("xai_oauth_device_continue_failed", "未能点击 xAI device 登录继续按钮", {
+        currentUrl: await ctx.tabs.getCurrentUrl(),
+        xaiOauthUrl: oauth
+      });
+    }
+    const deviceConsentConditions = [
       {
         name: "rate_limited_url",
         check: () => getRateLimitedOauthUrl(ctx)
-      },
-      {
-        name: "consent_url",
-        check: () => ctx.tabs.urlContains("/oauth2/consent")
       },
       {
         name: "device_consent_url",
         check: () => ctx.tabs.urlContains("/oauth2/device/consent")
       },
       {
-        name: "device_login",
-        check: () => findDeviceLoginPage(ctx)
-      },
-      {
         name: "allow_button",
         check: () => findVisibleConsentAllowButton(ctx)
       }
-    ], {
+    ];
+    if (includeDeviceDone) {
+      deviceConsentConditions.push({
+        name: "device_done_url",
+        check: () => ctx.tabs.urlContains("/oauth2/device/done")
+      });
+    }
+    const deviceConsentResult = await waitForAnyCondition(deviceConsentConditions, {
       timeoutMs: 30000,
-      label: "xAI OAuth consent 或 device 页面",
+      label: "xAI device consent 页面",
       signal: ctx.signal
     });
-    if (!readyResult.matched) {
-      return NodeResult.fail("xai_oauth_unexpected_url", `访问 xAI OAuth 后未进入 consent 或 device 页面: ${await ctx.tabs.getCurrentUrl()}`);
-    }
-    if (readyResult.name === "rate_limited_url") {
+    if (deviceConsentResult.name === "rate_limited_url") {
       return NodeResult.ok("xai_oauth_rate_limited_retry", {
-        currentUrl: readyResult.value,
+        currentUrl: deviceConsentResult.value,
         attempt,
         xaiOauthUrl: oauth
       });
     }
-
-    const isDeviceFlow = isXAiDeviceOauthUrl(oauth.url) || readyResult.name.startsWith("device_");
-    if (readyResult.name === "device_login") {
-      const continueResult = await clickDeviceLoginSubmit(ctx);
-      if (!continueResult.ok) {
-        return NodeResult.fail("xai_oauth_device_continue_failed", "未能点击 xAI device 登录继续按钮", {
-          currentUrl: await ctx.tabs.getCurrentUrl(),
-          xaiOauthUrl: oauth
-        });
-      }
-      const deviceConsentResult = await waitForAnyCondition([
-        {
-          name: "rate_limited_url",
-          check: () => getRateLimitedOauthUrl(ctx)
-        },
-        {
-          name: "device_consent_url",
-          check: () => ctx.tabs.urlContains("/oauth2/device/consent")
-        },
-        {
-          name: "allow_button",
-          check: () => findVisibleConsentAllowButton(ctx)
-        }
-      ], {
-        timeoutMs: 30000,
-        label: "xAI device consent 页面",
-        signal: ctx.signal
-      });
-      if (deviceConsentResult.name === "rate_limited_url") {
-        return NodeResult.ok("xai_oauth_rate_limited_retry", {
-          currentUrl: deviceConsentResult.value,
-          attempt,
-          xaiOauthUrl: oauth
-        });
-      }
-      if (!deviceConsentResult.matched) {
-        return NodeResult.fail("xai_oauth_unexpected_url", `点击 xAI device 继续后未进入 consent 页面: ${await ctx.tabs.getCurrentUrl()}`);
-      }
+    if (!deviceConsentResult.matched) {
+      return NodeResult.fail("xai_oauth_unexpected_url", `点击 xAI device 继续后未进入 consent 页面: ${await ctx.tabs.getCurrentUrl()}`);
     }
-
-    const currentUrl = await ctx.tabs.getCurrentUrl();
-    const oauthFlow = isDeviceFlow ? "device" : "authorization_code";
-    logger.info(oauthFlow === "device" ? "xAI device OAuth consent 已就绪" : "xAI OAuth consent 已就绪", {
-      currentUrl,
-      userCode: oauthFlow === "device" ? resolveDeviceUserCode(oauth.url) : ""
-    });
-    return NodeResult.ok(XAiRefreshOAuthAndLoginNode.statuses.consent, {
-      xaiOauthUrl: oauth,
-      xaiOauthFlow: oauthFlow,
-      xaiOauthDeviceUserCode: oauthFlow === "device" ? resolveDeviceUserCode(oauth.url) : "",
-      currentUrl
-    });
   }
+
+  const currentUrl = await ctx.tabs.getCurrentUrl();
+  const oauthFlow = isDeviceFlow ? "device" : "authorization_code";
+  logger.info(oauthFlow === "device" ? "xAI device OAuth consent 已就绪" : "xAI OAuth consent 已就绪", {
+    currentUrl,
+    authMode: normalizeXAiOauthAuthMode(ctx.state.xaiOauthAuthMode),
+    userCode: oauthFlow === "device" ? resolveDeviceUserCode(oauth.url) || oauth.userCode || "" : ""
+  });
+  return NodeResult.ok(XAiRefreshOAuthAndLoginNode.statuses.consent, {
+    xaiOauthUrl: oauth,
+    xaiOauthFlow: oauthFlow,
+    xaiOauthAuthMode: normalizeXAiOauthAuthMode(ctx.state.xaiOauthAuthMode),
+    xaiLocalOauth: ctx.state.xaiLocalOauth || null,
+    xaiOauthDeviceUserCode: oauthFlow === "device" ? resolveDeviceUserCode(oauth.url) || oauth.userCode || "" : "",
+    currentUrl
+  });
 }
 
 async function getRateLimitedOauthUrl(ctx) {

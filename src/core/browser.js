@@ -22,11 +22,14 @@ export class TabController {
 
   async resetXAiSession() {
     logger.info("清理 x.ai Cookie 并关闭相关标签页");
-    await clearCookiesForDomains(["x.ai", "accounts.x.ai"]);
+    const initialStoreIds = await getAllCookieStoreIds();
+    await clearCookiesForBaseDomains(["x.ai"], { storeIds: initialStoreIds });
     await closeTabsByUrlPatterns([
       "*://x.ai/*",
       "*://*.x.ai/*"
     ]);
+    const finalStoreIds = prioritizeCookieStoreIds(await getAllCookieStoreIds(), initialStoreIds[0]);
+    await clearCookiesForBaseDomains(["x.ai"], { storeIds: finalStoreIds });
     this.currentTabId = null;
   }
 
@@ -78,6 +81,21 @@ export class TabController {
     }
     const tab = await chrome.tabs.get(this.currentTabId);
     return tab.url || "";
+  }
+
+  async getXAiSsoCookie() {
+    return getXAiSsoCookie(await this.getCurrentCookieStoreId());
+  }
+
+  async ensureXAiSsoCookieForAuthHosts(value, preferredStoreId = "") {
+    return ensureXAiSsoCookieForAuthHosts(value, preferredStoreId || await this.getCurrentCookieStoreId());
+  }
+
+  async getCurrentCookieStoreId() {
+    if (!this.currentTabId || !await tabExists(this.currentTabId)) {
+      return "";
+    }
+    return getCookieStoreIdForTab(this.currentTabId);
   }
 
   async waitForTabLoaded(tabId = this.currentTabId, timeoutMs = 30000) {
@@ -327,6 +345,307 @@ async function clearCookiesForDomains(domains) {
       }).catch(() => {});
     }
   }
+}
+
+async function clearCookiesForBaseDomains(baseDomains, { storeIds = null } = {}) {
+  const normalizedBaseDomains = baseDomains
+    .map((domain) => normalizeCookieDomain(domain))
+    .filter(Boolean);
+  const targetStoreIds = storeIds
+    ? prioritizeCookieStoreIds(storeIds)
+    : await getAllCookieStoreIds();
+  const matchedCookies = [];
+  for (const storeId of targetStoreIds) {
+    const cookies = await chrome.cookies.getAll(storeId ? { storeId } : {}).catch(() => []);
+    for (const cookie of cookies || []) {
+      const domain = normalizeCookieDomain(cookie.domain);
+      if (normalizedBaseDomains.some((baseDomain) => domain === baseDomain || domain.endsWith(`.${baseDomain}`))) {
+        matchedCookies.push(cookie);
+      }
+    }
+  }
+
+  let removedCount = 0;
+  const failedCookies = [];
+  for (const cookie of matchedCookies) {
+    const removed = await removeCookieEveryWay(cookie);
+    if (removed) {
+      removedCount += 1;
+    } else {
+      failedCookies.push(describeCookie(cookie));
+    }
+  }
+
+  const remainingCookies = [];
+  for (const storeId of targetStoreIds) {
+    const cookies = await chrome.cookies.getAll(storeId ? { storeId } : {}).catch(() => []);
+    for (const cookie of cookies || []) {
+      const domain = normalizeCookieDomain(cookie.domain);
+      if (normalizedBaseDomains.some((baseDomain) => domain === baseDomain || domain.endsWith(`.${baseDomain}`))) {
+        remainingCookies.push(cookie);
+      }
+    }
+  }
+
+  logger.info("已清理指定根域 Cookie", {
+    baseDomains: normalizedBaseDomains,
+    storeIds: targetStoreIds,
+    matchedCount: matchedCookies.length,
+    removedCount,
+    failedCount: failedCookies.length,
+    remainingCount: remainingCookies.length,
+    failedCookies: failedCookies.slice(0, 20),
+    remainingCookies: remainingCookies.map(describeCookie).slice(0, 30)
+  });
+}
+
+async function getAllCookieStoreIds() {
+  const stores = await getAllCookieStoresSafe();
+  const storeIds = normalizeCookieStoreIds(stores.map((store) => store.id));
+  return storeIds.length ? storeIds : [undefined];
+}
+
+async function getCookieStoreIdForTab(tabId) {
+  const numericTabId = Number(tabId);
+  if (!Number.isFinite(numericTabId)) {
+    return "";
+  }
+  const [tab, stores] = await Promise.all([
+    chrome.tabs.get(numericTabId).catch(() => null),
+    getAllCookieStoresSafe()
+  ]);
+  const matchedStore = stores.find((store) => (store.tabIds || []).includes(numericTabId));
+  if (matchedStore?.id) {
+    return matchedStore.id;
+  }
+  if (!tab?.incognito) {
+    return "";
+  }
+
+  const incognitoTabIds = new Set(
+    (await chrome.tabs.query({}).catch(() => []) || [])
+      .filter((item) => item?.incognito)
+      .map((item) => item.id)
+      .filter((id) => Number.isFinite(Number(id)))
+  );
+  const incognitoStore = stores.find((store) => (store.tabIds || []).some((id) => incognitoTabIds.has(id)));
+  if (incognitoStore?.id) {
+    return incognitoStore.id;
+  }
+
+  return stores.find((store) => store.id && store.id !== "0")?.id || "";
+}
+
+function prioritizeCookieStoreIds(storeIds, preferredStoreId = "") {
+  const normalizedStoreIds = normalizeCookieStoreIds(storeIds);
+  const preferred = String(preferredStoreId || "").trim();
+  const ordered = preferred
+    ? [preferred, ...normalizedStoreIds.filter((storeId) => storeId !== preferred)]
+    : normalizedStoreIds;
+  return ordered.length ? [...new Set(ordered)] : [undefined];
+}
+
+function normalizeCookieStoreIds(storeIds) {
+  return [...new Set((storeIds || [])
+    .map((storeId) => storeId === undefined || storeId === null ? "" : String(storeId).trim())
+    .filter(Boolean))];
+}
+
+async function getAllCookieStoresSafe() {
+  if (!chrome.cookies?.getAllCookieStores) {
+    return [];
+  }
+  return await chrome.cookies.getAllCookieStores().catch(() => []) || [];
+}
+
+async function removeCookieEveryWay(cookie) {
+  const urls = buildCookieRemovalUrls(cookie);
+  for (const url of urls) {
+    const removed = await removeCookieWithDetails(cookie, url, true)
+      || await removeCookieWithDetails(cookie, url, false);
+    if (removed) {
+      return true;
+    }
+  }
+  return false;
+}
+
+async function removeCookieWithDetails(cookie, url, includePartitionKey) {
+  const details = {
+    url,
+    name: cookie.name
+  };
+  if (cookie.storeId) {
+    details.storeId = cookie.storeId;
+  }
+  if (includePartitionKey && cookie.partitionKey) {
+    details.partitionKey = cookie.partitionKey;
+  }
+  return Boolean(await chrome.cookies.remove(details).catch(() => null));
+}
+
+function buildCookieRemovalUrls(cookie) {
+  const domain = normalizeCookieDomain(cookie.domain);
+  const path = cookie.path || "/";
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  const urls = [
+    buildCookieUrl(cookie),
+    `https://${domain}${normalizedPath}`,
+    `http://${domain}${normalizedPath}`,
+    `https://${domain}/`,
+    `http://${domain}/`
+  ];
+  return [...new Set(urls)];
+}
+
+function describeCookie(cookie) {
+  return {
+    name: cookie.name || "",
+    domain: cookie.domain || "",
+    path: cookie.path || "",
+    storeId: cookie.storeId || "",
+    partitioned: Boolean(cookie.partitionKey),
+    secure: Boolean(cookie.secure),
+    httpOnly: Boolean(cookie.httpOnly)
+  };
+}
+
+function normalizeCookieDomain(value) {
+  return String(value || "").trim().toLowerCase().replace(/^\.+/, "");
+}
+
+async function getXAiSsoCookie(preferredStoreId = "") {
+  const cookies = [];
+  const seen = new Set();
+  const storeIds = prioritizeCookieStoreIds(await getAllCookieStoreIds(), preferredStoreId);
+  const urls = [
+    "https://accounts.x.ai/",
+    "https://auth.x.ai/",
+    "https://x.ai/"
+  ];
+  const domains = ["x.ai", ".x.ai", "accounts.x.ai", ".accounts.x.ai", "auth.x.ai", ".auth.x.ai"];
+
+  for (const storeId of storeIds) {
+    for (const url of urls) {
+      const details = { url, name: "sso" };
+      if (storeId) {
+        details.storeId = storeId;
+      }
+      const cookie = await chrome.cookies.get(details).catch(() => null);
+      addCookie(cookie);
+    }
+    for (const domain of domains) {
+      const details = { domain, name: "sso" };
+      if (storeId) {
+        details.storeId = storeId;
+      }
+      const matched = await chrome.cookies.getAll(details).catch(() => []);
+      for (const cookie of matched || []) {
+        addCookie(cookie);
+      }
+    }
+  }
+
+  const selected = cookies
+    .filter((cookie) => cookie?.value)
+    .sort((left, right) => scoreXAiSsoCookie(right, preferredStoreId) - scoreXAiSsoCookie(left, preferredStoreId))[0] || null;
+  logger.info("查询 xAI sso Cookie", {
+    preferredStoreId,
+    storeIds,
+    matchedCount: cookies.length,
+    selected: selected ? describeCookie(selected) : null
+  });
+  return selected;
+
+  function addCookie(cookie) {
+    if (!cookie?.value) {
+      return;
+    }
+    const key = [
+      cookie.storeId || "",
+      cookie.domain || "",
+      cookie.path || "",
+      cookie.name || "",
+      cookie.value || ""
+    ].join("\n");
+    if (seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    cookies.push(cookie);
+  }
+}
+
+async function ensureXAiSsoCookieForAuthHosts(value, preferredStoreId = "") {
+  const cookieValue = String(value || "").trim();
+  if (!cookieValue) {
+    return {
+      injected: false,
+      count: 0
+    };
+  }
+  const storeIds = prioritizeCookieStoreIds(await getAllCookieStoreIds(), preferredStoreId).filter(Boolean);
+  const targetStoreIds = storeIds.length ? storeIds.slice(0, 1) : [""];
+  const results = [];
+  for (const storeId of targetStoreIds) {
+    for (const url of [
+      "https://accounts.x.ai/",
+      "https://auth.x.ai/"
+    ]) {
+      const details = {
+        url,
+        name: "sso",
+        value: cookieValue,
+        path: "/",
+        secure: true,
+        sameSite: "lax"
+      };
+      if (storeId) {
+        details.storeId = storeId;
+      }
+      const result = await chrome.cookies.set(details).catch((error) => ({
+        error: error?.message || String(error),
+        url,
+        storeId
+      }));
+      results.push({
+        url,
+        storeId,
+        ok: Boolean(result && !result.error),
+        error: result?.error || ""
+      });
+    }
+  }
+  return {
+    injected: results.some((result) => result.ok),
+    count: results.filter((result) => result.ok).length,
+    preferredStoreId,
+    results
+  };
+}
+
+function scoreXAiSsoCookie(cookie, preferredStoreId = "") {
+  const domain = String(cookie?.domain || "").toLowerCase();
+  let score = 0;
+  if (preferredStoreId && cookie?.storeId === preferredStoreId) {
+    score += 1000;
+  }
+  if (domain === ".x.ai") {
+    score += 30;
+  }
+  if (domain.includes("accounts.x.ai")) {
+    score += 20;
+  }
+  if (domain.includes("auth.x.ai")) {
+    score += 15;
+  }
+  if (cookie?.httpOnly) {
+    score += 5;
+  }
+  if (cookie?.secure) {
+    score += 3;
+  }
+  return score;
 }
 
 async function closeTabsByUrlPatterns(patterns) {

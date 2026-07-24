@@ -11,6 +11,7 @@ import {
   isOpenAiMode,
   isOpenAiRegisterMode,
   isReauthorizeMode,
+  isXAiMode,
   isXAiReauthorizeMode,
   normalizeRunMode
 } from "../core/runModes.js";
@@ -20,6 +21,7 @@ import { SmsActivationStore } from "../services/smsActivationStore.js";
 import { buildRegisterFlow, getManualRetryPolicy, getNodeOrder } from "../flow/registerFlowFactory.js";
 import { HERO_SMS_COUNTRIES, SMS_BOWER_COUNTRIES } from "../data/smsCountries.js";
 import { OPENAI_REGISTER_FLOWS, normalizeOpenAiRegisterFlow } from "../core/openAiRegisterFlows.js";
+import { XAI_OAUTH_AUTH_MODES, XAI_OAUTH_AUTH_MODE_LABELS, normalizeXAiOauthAuthMode } from "../core/xaiOauthAuthModes.js";
 
 const logger = createLogger("ui");
 const OPENAI_OAUTH_NODE_NAME = "select_codex_account";
@@ -152,15 +154,22 @@ const CONFIG_SCHEMAS = {
   },
   register: () => {
     const basePath = getActiveRegisterConfigPath();
+    const isRegisterMode = () => !isReauthorizeMode(getRegisterMode());
+    const isXAiCurrentMode = () => isXAiMode(getRegisterMode());
     return [
-      section(`${getAccountTypeLabel(getCurrentAccountType())} 批量注册`),
-      batchCountField("注册数量", `${basePath}.batchCount`, "失败会记录日志并继续下一轮；停止按钮会终止后续轮次。"),
-      section("注册流程"),
+      section(`${getAccountTypeLabel(getCurrentAccountType())} 批量注册`, isRegisterMode),
+      batchCountField("注册数量", `${basePath}.batchCount`, "失败会记录日志并继续下一轮；停止按钮会终止后续轮次。", isRegisterMode),
+      section("注册流程", () => isOpenAiRegisterMode(getRegisterMode())),
       selectField("注册流程", `${basePath}.openAiRegisterFlow`, [
         [OPENAI_REGISTER_FLOWS.emailFirst, "先邮箱后绑定手机号"],
         [OPENAI_REGISTER_FLOWS.phoneFirst, "先手机号后邮箱绑定"]
       ], "", () => isOpenAiRegisterMode(getRegisterMode())),
-      numberField("邮箱验证码超时", `${basePath}.verificationCodeWaitTimeout`, "秒"),
+      section("xAI OAuth", isXAiCurrentMode),
+      selectField("OAuth 认证方式", `${basePath}.xaiOauthAuthMode`, [
+        [XAI_OAUTH_AUTH_MODES.accountService, XAI_OAUTH_AUTH_MODE_LABELS[XAI_OAUTH_AUTH_MODES.accountService]],
+        [XAI_OAUTH_AUTH_MODES.local, XAI_OAUTH_AUTH_MODE_LABELS[XAI_OAUTH_AUTH_MODES.local]]
+      ], "账号服务认证保持当前 CPA 流程；本地认证会用浏览器登录态本地换取 token 后上传账号服务。", isXAiCurrentMode),
+      numberField("邮箱验证码超时", `${basePath}.verificationCodeWaitTimeout`, "秒", isRegisterMode),
       numberField("手机号重试次数", `${basePath}.phoneNumberRetryAttempts`, "次", () => isOpenAiRegisterMode(getRegisterMode())),
       numberField("短信 OAuth 重试", `${basePath}.smsVerificationRetryAttempts`, "次", () => isOpenAiRegisterMode(getRegisterMode())),
       numberField("OAuth 重新认证阈值", `${basePath}.oauthReauthWaitThresholdSeconds`, "秒", () => isOpenAiRegisterMode(getRegisterMode())),
@@ -262,6 +271,13 @@ const RESULT_STATUS_LABELS = {
   xai_oauth_rate_limited: "xAI OAuth 限流",
   xai_oauth_rate_limited_retry: "xAI OAuth 限流重试",
   xai_oauth_state_missing: "xAI OAuth 缺少 state",
+  xai_local_oauth_sso_missing: "xAI 本地认证缺少 SSO",
+  xai_local_oauth_start_failed: "xAI 本地认证初始化失败",
+  xai_local_oauth_context_missing: "xAI 本地认证上下文缺失",
+  xai_local_oauth_token_failed: "xAI 本地认证 Token 失败",
+  xai_local_oauth_retry: "xAI 本地认证重试",
+  xai_local_oauth_denied: "xAI 本地认证被拒绝",
+  xai_local_auth_file_uploaded: "xAI 本地认证文件已上传",
   xai_account_exported: "xAI 账号已导出",
   xai_account_export_failed: "xAI 账号导出失败",
   xai_auth_file_patch_failed: "xAI 认证文件修补失败",
@@ -2222,6 +2238,9 @@ function handleConfigControlChange(field, value, rerender) {
   }
   if (field.path.endsWith(".openAiRegisterFlow")) {
     setConfigValue(appConfig, field.path, normalizeOpenAiRegisterFlow(getConfigValue(appConfig, field.path)));
+  }
+  if (field.path.endsWith(".xaiOauthAuthMode")) {
+    setConfigValue(appConfig, field.path, normalizeXAiOauthAuthMode(getConfigValue(appConfig, field.path)));
   }
   if (field.path === "register.mode" || field.path.endsWith(".openAiRegisterFlow")) {
     rebuildFlowForMode();

@@ -1,5 +1,6 @@
 import { ACCOUNT_TYPES, RUN_MODES, getAccountTypeByMode, isOpenAiRegisterMode, isReauthorizeMode, normalizeRunMode } from "./runModes.js";
 import { OPENAI_REGISTER_FLOWS, normalizeOpenAiRegisterFlow } from "./openAiRegisterFlows.js";
+import { XAI_OAUTH_AUTH_MODES, normalizeXAiOauthAuthMode } from "./xaiOauthAuthModes.js";
 
 const DEFAULT_ACCOUNT_PROFILE = Object.freeze({
   randomPassword: true,
@@ -82,6 +83,7 @@ const DEFAULT_SERVICE_CONFIG = Object.freeze({
 
 const DEFAULT_REGISTER_CONFIG = Object.freeze({
   openAiRegisterFlow: OPENAI_REGISTER_FLOWS.emailFirst,
+  xaiOauthAuthMode: XAI_OAUTH_AUTH_MODES.accountService,
   batchCount: 1,
   verificationCodeWaitTimeout: 60,
   phoneNumberRetryAttempts: 5,
@@ -365,6 +367,7 @@ function buildMigratedRegisterConfigs(migrated) {
 
 function normalizeRegisterConfig(registerConfig = {}) {
   registerConfig.openAiRegisterFlow = normalizeOpenAiRegisterFlow(registerConfig.openAiRegisterFlow);
+  registerConfig.xaiOauthAuthMode = normalizeXAiOauthAuthMode(registerConfig.xaiOauthAuthMode);
   delete registerConfig.mode;
   if (Object.hasOwn(registerConfig, "reuseLocalActivation") && !Object.hasOwn(registerConfig, "reusePhoneNumber")) {
     registerConfig.reusePhoneNumber = registerConfig.reuseLocalActivation;

@@ -1,17 +1,12 @@
 import { joinUrl } from "../core/http.js";
 import { createLogger } from "../core/logger.js";
 import { ACCOUNT_TYPES, normalizeAccountType } from "../core/runModes.js";
+import { XAI_LOCAL_AUTH_FILE_HEADERS } from "./xaiLocalOAuthService.js";
 
 const logger = createLogger("cpa");
 
 const XAI_AUTH_FILE_BASE_URL = "https://cli-chat-proxy.grok.com/v1";
-const XAI_AUTH_FILE_HEADERS = Object.freeze({
-  "x-grok-client-version": "0.2.93",
-  "x-xai-token-auth": "xai-grok-cli",
-  "x-authenticateresponse": "authenticate-response",
-  "x-grok-client-identifier": "grok-shell",
-  "User-Agent": "grok-shell/0.2.93 (linux; x86_64)"
-});
+const XAI_AUTH_FILE_HEADERS = XAI_LOCAL_AUTH_FILE_HEADERS;
 const XAI_AUTH_FILE_DOWNLOAD_MAX_ATTEMPTS = 30;
 const XAI_AUTH_FILE_DOWNLOAD_RETRY_INTERVAL_MS = 2000;
 
@@ -202,6 +197,33 @@ export class CpaAccountService {
       signal: options.signal
     });
     return parseOptionalJson(text);
+  }
+
+  async uploadXAiAuthFile({ emailAddress, authFile, signal = null } = {}) {
+    const fileName = buildXAiAuthFileName(emailAddress);
+    const uploadUrl = joinUrl(this.config.baseUrl, "auth-files");
+    logger.info("上传 CPA xAI 本地认证文件", {
+      url: uploadUrl,
+      fileName,
+      baseUrl: authFile?.base_url || "",
+      headerKeys: Object.keys(authFile?.headers || {})
+    });
+    const uploadPayload = await this.uploadAuthFile(uploadUrl, fileName, authFile, { signal });
+    const success = uploadPayload == null
+      || uploadPayload?.success === true
+      || uploadPayload?.status === "ok";
+    if (!success) {
+      throw new Error(uploadPayload?.error || uploadPayload?.message || `上传响应异常: ${JSON.stringify(uploadPayload)}`);
+    }
+    return {
+      success: true,
+      status: uploadPayload?.status || "ok",
+      fileName,
+      baseUrl: authFile?.base_url || "",
+      lastRefresh: authFile?.last_refresh || "",
+      headerKeys: Object.keys(authFile?.headers || {}),
+      attributes: uploadPayload || {}
+    };
   }
 
   async deleteAccount(record) {

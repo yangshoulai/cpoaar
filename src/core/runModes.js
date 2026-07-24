@@ -36,7 +36,7 @@ const RUN_MODE_META = Object.freeze({
   [RUN_MODES.xaiReauthorize]: {
     label: "xAI 授权",
     accountType: ACCOUNT_TYPES.xai,
-    configGroups: ["accountProfile", "httpService", "emailService", "accountManagementService"]
+    configGroups: ["accountProfile", "httpService", "emailService", "accountManagementService", "register"]
   }
 });
 
